@@ -1,0 +1,5 @@
+streamlit
+elevenlabs
+pydub
+requests
+python-dotenv
