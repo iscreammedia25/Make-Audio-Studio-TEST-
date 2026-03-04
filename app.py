@@ -3,6 +3,7 @@ import processor
 import audio_engine
 import exporter
 import json
+import llm_helper
 
 # 페이지 설정
 st.set_page_config(page_title="동화 대본 자동 더빙 에이전트", layout="wide")
@@ -10,6 +11,8 @@ st.set_page_config(page_title="동화 대본 자동 더빙 에이전트", layout
 # 세션 상태 초기화
 if 'api_key' not in st.session_state:
     st.session_state.api_key = ""
+if 'gemini_api_key' not in st.session_state:
+    st.session_state.gemini_api_key = "AIzaSyBjgNTLf2IcNalpD8y_3OYKLb0NzfHFAv4" # Default for convenience
 if 'voices' not in st.session_state:
     st.session_state.voices = {}
 if 'parsed_data' not in st.session_state:
@@ -24,6 +27,8 @@ if 'characters' not in st.session_state:
     st.session_state.characters = {}
 if 'character_voice_mappings' not in st.session_state:
     st.session_state.character_voice_mappings = {}
+if 'character_confirmed' not in st.session_state:
+    st.session_state.character_confirmed = False
 
 # 커스텀 보이스 셀렉터 헬퍼 함수
 def voice_selector_ui(key_label, current_voice_id, voices_dict, container_key):
@@ -75,6 +80,8 @@ def voice_selector_ui(key_label, current_voice_id, voices_dict, container_key):
 # 사이드바: 기본 설정 및 입력 UI
 with st.sidebar:
     st.title("⚙️ 설정")
+    
+    st.subheader("ElevenLabs 설정")
     api_key_input = st.text_input("ElevenLabs API Key", value=st.session_state.api_key, type="password")
     if st.button("API Key 적용"):
         if api_key_input:
@@ -99,6 +106,16 @@ with st.sidebar:
             st.warning("API Key를 입력해 주세요.")
 
     st.divider()
+    st.subheader("Gemini 설정")
+    gemini_key_input = st.text_input("Gemini API Key", value=st.session_state.gemini_api_key, type="password")
+    if st.button("Gemini Key 적용"):
+         if gemini_key_input:
+             st.session_state.gemini_api_key = gemini_key_input.strip()
+             st.success("Gemini API Key가 저장되었습니다.")
+         else:
+             st.warning("Gemini API Key를 입력해 주세요.")
+
+    st.divider()
     category = st.radio("동화 카테고리", ["오리지널(OG)", "클래식(CS)"])
     category_code = "OG" if category == "오리지널(OG)" else "CS"
     story_no = st.text_input("스토리 번호 (예: 0001)", value="0001")
@@ -106,182 +123,271 @@ with st.sidebar:
 st.title("🎙️ 동화 대본 자동 더빙 및 편집 에이전트")
 
 # 1. 대본 입력 섹션
-st.header("1. 대본 입력")
+st.header("1. 대본 입력 및 AI 분석")
 script_text = st.text_area("대본을 입력하세요 (예: [SC01] 내레이션 \"대사\")", height=200)
 
-if st.button("대본 적용하기"):
+if 'script_parsed' not in st.session_state:
+    st.session_state.script_parsed = False
+
+if st.button("AI 분석하기 (대본 매칭)"):
     if not script_text:
         st.warning("대본을 입력해 주세요.")
+    elif not st.session_state.get('gemini_api_key'):
+        st.error("좌측 사이드바에서 Gemini API Key를 입력해 주세요.")
     else:
-        parsed = processor.parse_script(script_text)
-        if not parsed:
-            st.error("대본 파싱에 실패했습니다. 형식([SC01] 등)을 확인해 주세요.")
-        else:
-            st.session_state.parsed_data = parsed
-            st.session_state.characters = processor.extract_characters(parsed)
-            # 세그먼트별 고유 ID를 사용한 매칭 정보 초기화
-            st.session_state.voice_mappings = {item['segment_id']: "" for item in parsed}
-            st.session_state.character_voice_mappings = {name: "" for name in st.session_state.characters}
-            st.success(f"{len(parsed)}개의 세그먼트와 {len(st.session_state.characters)}명의 캐릭터를 성공적으로 파싱했습니다.")
+        with st.spinner("Gemini AI가 대본을 분석하여 캐릭터를 추출하고 있습니다..."):
+            # 1단계: Gemini를 통한 캐릭터 추출 (대사 치는 캐릭터만)
+            res = llm_helper.extract_characters_via_gemini(st.session_state.gemini_api_key, script_text)
+            if not res['success']:
+                st.error(res['error'])
+            else:
+                st.session_state.llm_characters = res['characters']
+                st.success("캐릭터 추출 완료! 대본 매칭을 진행합니다...")
+                
+                # 2단계: 실제 대본 파싱 (확정된 캐릭터 리스트 주입)
+                parsed, raw_text = processor.parse_script(script_text, st.session_state.llm_characters)
+                if not parsed:
+                    st.error("대본 텍스트 구조(#SC01 등)가 잘못되었습니다.")
+                else:
+                    st.session_state.parsed_data = parsed
+                    st.session_state.characters = st.session_state.llm_characters.copy()
+                    # 세그먼트 매칭 초기화
+                    st.session_state.voice_mappings = {item['segment_id']: "" for item in parsed}
+                    st.session_state.character_voice_mappings = {name: "" for name in st.session_state.characters}
+                    st.session_state.script_parsed = True
+                    st.session_state.character_confirmed = False
+                    st.rerun()
 
-# 2. 보이스 매칭 섹션
-if st.session_state.parsed_data:
-    st.divider()
-    st.header("2. ElevenLabs 보이스 매칭")
-    
-    if not st.session_state.voices:
-        st.info("사이드바에서 ElevenLabs API Key를 입력하면 목소리 목록이 나타납니다.")
-    else:
-        voice_names = list(st.session_state.voices.keys())
+# 2. 보이스 설정 (내레이션 + 캐릭터 통합)
+if st.session_state.get('script_parsed') and st.session_state.parsed_data:
+        st.divider()
+        st.header("2. 보이스 설정")
         
-        col1, col2 = st.columns(2)
-        with col1:
+        # 2-1. 내레이션 설정
+        st.subheader("🎙️ 내레이션 보이스")
+        if not st.session_state.voices:
+            st.info("사이드바에서 ElevenLabs API Key를 입력하세요.")
+        else:
             if 'all_narration_voice_id' not in st.session_state:
                 st.session_state.all_narration_voice_id = ""
             
-            new_id = voice_selector_ui("모든 내레이션", st.session_state.all_narration_voice_id, st.session_state.voices, "all_narration")
-            if new_id != st.session_state.all_narration_voice_id:
-                st.session_state.all_narration_voice_id = new_id
-                st.rerun()
-            
-            if st.button("내레이션 일괄 적용", use_container_width=True):
-                if st.session_state.all_narration_voice_id:
-                    v_id = st.session_state.all_narration_voice_id
-                    for item in st.session_state.parsed_data:
-                        if item['type'] == '내레이션':
-                            st.session_state.voice_mappings[item['segment_id']] = v_id
-                    st.success("내레이션 보이스가 일괄 적용되었습니다.")
+            n_col1, n_col2 = st.columns([3, 1])
+            with n_col1:
+                new_n_id = voice_selector_ui("모두 적용할 내레이션 보이스", st.session_state.all_narration_voice_id, st.session_state.voices, "all_narration")
+                if new_n_id != st.session_state.all_narration_voice_id:
+                    st.session_state.all_narration_voice_id = new_n_id
                     st.rerun()
-
-        # '모든 대사' 섹션 삭제 (캐릭터별 설정으로 대체됨)
-
-        st.write("---")
-        st.subheader("👥 캐릭터별 설정")
-        if not st.session_state.characters:
-            st.info("추출된 캐릭터가 없습니다. 문맥에서 화자를 찾을 수 있도록 대본을 보완해 보세요.")
-        else:
-            char_cols = st.columns(len(st.session_state.characters) if len(st.session_state.characters) < 4 else 4)
-            for i, (name, info) in enumerate(st.session_state.characters.items()):
-                with char_cols[i % 4]:
-                    with st.expander(f"👤 {name}", expanded=True):
-                        st.write(f"**정보:** {info['gender']}, {info['age']}, {info['tone']}")
-                        
-                        # 캐릭터 전용 보이스 선택
-                        current_char_voice = st.session_state.character_voice_mappings.get(name, "")
-                        chosen_id = voice_selector_ui(f"{name} 보이스", current_char_voice, st.session_state.voices, f"char_{name}")
-                        
-                        if chosen_id != current_char_voice:
-                            st.session_state.character_voice_mappings[name] = chosen_id
-                            # 해당 캐릭터의 모든 라인에 보이스 적용
-                            for item in st.session_state.parsed_data:
-                                if item.get('character') == name:
-                                    st.session_state.voice_mappings[item['segment_id']] = chosen_id
-                            st.rerun()
-                            
-                        if st.button(f"{name} 일괄 적용", key=f"apply_char_{name}"):
-                            if chosen_id:
-                                for item in st.session_state.parsed_data:
-                                    if item.get('character') == name:
-                                        st.session_state.voice_mappings[item['segment_id']] = chosen_id
-                                st.success(f"'{name}'의 모든 대사에 보이스가 적용되었습니다.")
-                                st.rerun()
+            with n_col2:
+                if st.button("내레이션 일괄 적용", use_container_width=True):
+                    if st.session_state.all_narration_voice_id:
+                        for item in st.session_state.parsed_data:
+                            if item['type'] == '내레이션':
+                                st.session_state.voice_mappings[item['segment_id']] = st.session_state.all_narration_voice_id
+                        st.success("내레이션 보이스가 일괄 적용되었습니다.")
+                        st.rerun()
 
         st.write("---")
-        st.subheader("📝 세그먼트 상세 설정 및 편집")
         
-        # 헤더 섹션 (간격 조정)
-        h_cols = st.columns([0.7, 0.7, 1.3, 4.5, 3.5, 1])
-        h_cols[0].markdown("**장면**")
-        h_cols[1].markdown("**순서**")
-        h_cols[2].markdown("**캐릭터**")
-        h_cols[3].markdown("**스크립트**")
-        h_cols[4].markdown("**보이스 설정**")
-        h_cols[5].markdown("**듣기**")
-        st.write("---")
+        # 2-2. 캐릭터별 설정
+        st.subheader("👥 캐릭터 보이스")
+        if not st.session_state.characters:
+            st.info("추출된 캐릭터가 없습니다. '+' 버튼으로 추가하거나 대본을 보완해 보세요.")
+        
+        # 8열 그리드
+        char_cols = st.columns(8)
+        
+        # 캐릭터 카드
+        for i, (name, info) in enumerate(st.session_state.characters.items()):
+            with char_cols[i % 8]:
+                with st.expander(f"👤 {name}", expanded=True):
+                    new_name = st.text_input(f"이름", value=name, key=f"edit_char_{name}", label_visibility="collapsed")
+                    if new_name != name:
+                        if new_name and new_name not in st.session_state.characters:
+                            st.session_state.characters[new_name] = st.session_state.characters.pop(name)
+                            st.session_state.character_voice_mappings[new_name] = st.session_state.character_voice_mappings.pop(name, "")
+                            for item in st.session_state.parsed_data:
+                                if item['character'] == name:
+                                    item['character'] = new_name
+                            st.rerun()
 
-        # 라인별 설정
-        for i, item in enumerate(st.session_state.parsed_data):
-            key = item['segment_id']
-            cols = st.columns([0.7, 0.7, 1.3, 4.5, 3.5, 1])
-            
-            # 1. 장면
-            cols[0].write(f"**{item['scene']}**")
-            
-            # 2. 순서
-            cols[1].write(f"**Line {item['line']}**")
-            
-            # 3. 캐릭터 수동 수정 (드롭다운)
-            with cols[2]:
-                char_options = list(st.session_state.characters.keys())
-                if "내레이션" not in char_options:
-                    char_options.append("내레이션")
-                
-                current_char = item['character']
-                if current_char not in char_options:
-                    char_options.insert(0, current_char)
-                
-                selected_char = st.selectbox(f"Char_{key}", options=char_options, index=char_options.index(current_char), key=f"char_select_{key}", label_visibility="collapsed")
-                
-                if selected_char != current_char:
-                    st.session_state.parsed_data[i]['character'] = selected_char
-                    # 캐릭터가 바뀌면 해당 캐릭터에게 지정된 보이스가 있는지 확인하여 자동 적용
-                    if selected_char == "내레이션" and st.session_state.all_narration_voice_id:
-                        st.session_state.voice_mappings[key] = st.session_state.all_narration_voice_id
-                    elif selected_char in st.session_state.character_voice_mappings:
-                        char_voice = st.session_state.character_voice_mappings[selected_char]
-                        if char_voice:
-                            st.session_state.voice_mappings[key] = char_voice
+                    st.caption(f"{info.get('gender', '중성')} | {info.get('age', '성인')} | {info.get('tone', '보통')}")
+                    if info.get('description'):
+                        st.info(info['description'])
                     
-                    st.session_state.characters = processor.extract_characters(st.session_state.parsed_data)
-                    st.rerun()
+                    if st.session_state.voices:
+                        current_v = st.session_state.character_voice_mappings.get(new_name, "")
+                        chosen_v = voice_selector_ui("보이스", current_v, st.session_state.voices, f"v_char_{new_name}")
+                        if chosen_v != current_v:
+                            st.session_state.character_voice_mappings[new_name] = chosen_v
+                            for item in st.session_state.parsed_data:
+                                if item.get('character') == new_name:
+                                    st.session_state.voice_mappings[item['segment_id']] = chosen_v
+                            st.rerun()
+                        
+                        if st.button("적용", key=f"apply_{new_name}", use_container_width=True):
+                            if chosen_v:
+                                for item in st.session_state.parsed_data:
+                                    if item.get('character') == new_name:
+                                        st.session_state.voice_mappings[item['segment_id']] = chosen_v
+                                st.rerun()
+                    
+                    if st.button("삭제", key=f"del_{new_name}", type="secondary", use_container_width=True):
+                        st.session_state.characters.pop(new_name)
+                        st.session_state.character_voice_mappings.pop(new_name, None)
+                        for item in st.session_state.parsed_data:
+                            if item['character'] == new_name:
+                                item['character'] = "내레이션"
+                        st.rerun()
 
-            # 4. 스크립트 수동 수정 (대사의 경우 따옴표 포함)
-            with cols[3]:
-                # 표시용 텍스트 (대사는 따옴표로 감싸서 표시)
-                is_dialogue = item['type'] == '대사'
-                raw_text = item['text']
-                display_text = f'"{raw_text}"' if is_dialogue and not (raw_text.startswith(('"', "'")) and raw_text.endswith(('"', "'"))) else raw_text
-                
-                new_text = st.text_area(f"Text_{key}", value=display_text, key=f"text_input_{key}", label_visibility="collapsed", height=68)
-                
-                final_save_text = new_text
-                if is_dialogue:
-                    if (final_save_text.startswith('"') and final_save_text.endswith('"')) or \
-                       (final_save_text.startswith("'") and final_save_text.endswith("'")):
-                        final_save_text = final_save_text[1:-1]
-                
-                if final_save_text != item['text']:
-                    st.session_state.parsed_data[i]['text'] = final_save_text
+        # 수동 추가 카드
+        next_i = len(st.session_state.characters)
+        with char_cols[next_i % 8]:
+            with st.container(border=True):
+                st.write("<div style='text-align: center; font-size: 20px;'>➕</div>", unsafe_allow_html=True)
+                new_c_name = st.text_input("이름", key="plus_char_name", placeholder="추가", label_visibility="collapsed")
+                if st.button("추가", key="plus_char_btn", use_container_width=True):
+                    if new_c_name and new_c_name not in st.session_state.characters:
+                        st.session_state.characters[new_c_name] = {"name": new_c_name, "gender": "중성", "age": "성인", "tone": "보통"}
+                        st.session_state.character_voice_mappings[new_c_name] = ""
+                        st.rerun()
+
+        st.divider()
+        if not st.session_state.get('character_confirmed', False):
+            if st.button("✅ 보이스 설정 완료 및 다음 단계로", type="primary", use_container_width=True):
+                st.session_state.character_confirmed = True
+                st.rerun()
+        else:
+            if st.button("🔄 보이스 설정 수정하기", use_container_width=True):
+                st.session_state.character_confirmed = False
+                st.rerun()
+
+# 3. 세그먼트 상세 설정 및 편집 (보이스 확정 후 노출)
+if st.session_state.get('parsed_data') and st.session_state.get('character_confirmed'):
+    st.write("---")
+    st.header("3. 세그먼트 상세 설정 및 편집")
+    h_cols = st.columns([0.6, 1.1, 1.5, 4.3, 3.5, 1.0])
+    h_cols[0].markdown("**장면**")
+    h_cols[1].markdown("**순서**")
+    h_cols[2].markdown("**캐릭터**")
+    h_cols[3].markdown("**스크립트 (수정 시 엔터/빈 곳 클릭)**")
+    h_cols[4].markdown("**보이스 설정**")
+    h_cols[5].markdown("**추가/삭제**")
+    st.write("---")
+
+    # 라인별 설정
+    for i, item in enumerate(st.session_state.parsed_data):
+        key = item['segment_id']
+        cols = st.columns([0.6, 1.1, 1.5, 4.3, 3.5, 1.0])
+        
+        # 1. 장면
+        cols[0].write(f"**{item['scene']}**")
+        
+        # 2. 순서
+        with cols[1]:
+            # 기본적으로 Line 01부터 Line 10까지 선택지 제공, 그 이상의 라인이 있다면 포함시킴
+            line_options = [f"Line {n:02d}" for n in range(1, 11)]
             
-            # 5. 보이스 설정
-            current_voice_id = st.session_state.voice_mappings.get(key, "")
-            with cols[4]:
+            # 파싱된 item['line']이 숫자열 혹은 '03_new' 형태일 수 있음. 'Line ' 접두사를 포함해 통일
+            curr_raw_val = str(item['line'])
+            curr_display_val = f"Line {curr_raw_val}" if not curr_raw_val.startswith("Line ") else curr_raw_val
+            
+            # 현재 할당된 라인 번호가 1~10을 벗어난 숫자이거나 02_new 같은 문자열일 경우 선택지에 추가
+            if curr_display_val not in line_options:
+                line_options.append(curr_display_val)
+                line_options.sort() # 파이썬 문자열 기본 정렬(Line 01, Line 02, ...)
+                
+            selected_line_display = st.selectbox(
+                f"Line_{key}", 
+                options=line_options, 
+                index=line_options.index(curr_display_val), 
+                key=f"line_select_{key}", 
+                label_visibility="collapsed"
+            )
+            
+            selected_raw_val = selected_line_display.replace("Line ", "")
+            if selected_raw_val != curr_raw_val:
+                st.session_state.parsed_data[i]['line'] = selected_raw_val
+                st.rerun()
+                
+        # 3. 캐릭터 수동 수정 (드롭다운)
+        with cols[2]:
+            char_options = list(st.session_state.characters.keys())
+            if "내레이션" not in char_options:
+                char_options.append("내레이션")
+            
+            current_char = item['character']
+            if current_char not in char_options:
+                char_options.insert(0, current_char)
+            
+            selected_char = st.selectbox(f"Char_{key}", options=char_options, index=char_options.index(current_char), key=f"char_select_{key}", label_visibility="collapsed")
+            
+            if selected_char != current_char:
+                st.session_state.parsed_data[i]['character'] = selected_char
+                # 캐릭터가 바뀌면 해당 캐릭터에게 지정된 보이스가 있는지 확인하여 자동 적용
+                if selected_char == "내레이션" and st.session_state.get('all_narration_voice_id'):
+                    st.session_state.voice_mappings[key] = st.session_state.all_narration_voice_id
+                elif selected_char in st.session_state.character_voice_mappings:
+                    char_voice = st.session_state.character_voice_mappings[selected_char]
+                    if char_voice:
+                        st.session_state.voice_mappings[key] = char_voice
+                
+                # 여기서 extract_characters를 다시 부르면 사용자가 수동으로 수정한 캐릭터 목록이 날아갈 수 있으므로 주의 필요
+                # 하지만 드롭다운 옵션 유지를 위해 필요할 수도 있음. 
+                # 일단은 characters를 직접 관리하므로 parsed_data 기반 자동 추출은 호출하지 않음.
+                st.rerun()
+
+        # 4. 스크립트 수동 수정 (대사의 경우 따옴표 포함)
+        with cols[3]:
+            is_dialogue = item['type'] == '대사'
+            raw_text = item['text']
+            display_text = f'"{raw_text}"' if is_dialogue and not (raw_text.startswith(('"', "'")) and raw_text.endswith(('"', "'"))) else raw_text
+            
+            new_text = st.text_area(f"Text_{key}", value=display_text, key=f"text_input_{key}", label_visibility="collapsed", height=68)
+            
+            final_save_text = new_text
+            if is_dialogue:
+                if (final_save_text.startswith('"') and final_save_text.endswith('"')) or \
+                   (final_save_text.startswith("'") and final_save_text.endswith("'")):
+                    final_save_text = final_save_text[1:-1]
+            
+            if final_save_text != item['text']:
+                st.session_state.parsed_data[i]['text'] = final_save_text
+        
+        # 5. 보이스 설정
+        current_voice_id = st.session_state.voice_mappings.get(key, "")
+        with cols[4]:
+            if st.session_state.voices:
                 chosen_id = voice_selector_ui(f"{item['type']} {key}", current_voice_id, st.session_state.voices, f"row_{key}")
                 if chosen_id != current_voice_id:
                     st.session_state.voice_mappings[key] = chosen_id
                     st.rerun()
-            
-            # 6. 듣기 (개별 세그먼트 음성 생성 및 재생)
-            with cols[5]:
-                if st.button("▶️", key=f"play_{key}", help="이 조각만 듣기"):
-                    if not st.session_state.api_key:
-                        st.error("API Key 필수")
-                    elif not current_voice_id:
-                        st.warning("보이스 미선택")
-                    else:
-                        with st.spinner("⏳"):
-                            audio_bytes = audio_engine.generate_audio(st.session_state.api_key, item['text'], current_voice_id)
-                            if isinstance(audio_bytes, dict) and "error" in audio_bytes:
-                                # 미리보기 텍스트 구성 (대사는 따옴표 포함)
-                                is_dialogue = item['type'] == '대사'
-                                text_to_show = f'"{item["text"]}"' if is_dialogue else item['text']
-                                st.error(f"생성 실패: {audio_bytes['error']}\n\n**SC {item['scene']} - Line {item['line']} ({item['character']})**\n\n{text_to_show}")
-                            else:
-                                st.audio(audio_bytes, format="audio/mpeg", autoplay=True)
-            
-            # 수동 입력 모드 처리
+            else:
+                st.write("API Key 필요")
+                
             if st.session_state.voice_mappings.get(key) == "manual":
                 st.session_state.voice_mappings[key] = st.text_input(f"Voice ID 입력 ({key})", key=f"manual_input_{key}", placeholder="ElevenLabs Voice ID 입력")
+        
+        # 6. 추가 (+) 버튼
+        with cols[5]:
+            if st.button("➕", key=f"add_{key}", help="이 대사 아래에 빈 행 추가"):
+                import uuid
+                new_id = str(uuid.uuid4())[:8]
+                new_item = {
+                    'scene': item['scene'],
+                    'line': f"{item['line']}_new",
+                    'type': '대사', # 기본적으로 대사로 세팅
+                    'character': item['character'],
+                    'text': '',
+                    'segment_id': new_id
+                }
+                st.session_state.parsed_data.insert(i + 1, new_item)
+                st.session_state.voice_mappings[new_id] = current_voice_id
+                st.rerun()
+                
+            if st.button("🗑️", key=f"del_row_{key}", help="이 행 삭제"):
+                st.session_state.parsed_data.pop(i)
+                st.session_state.voice_mappings.pop(key, None)
+                st.rerun()
 
     # 3. 음원 생성 및 미리보기 섹션
     st.divider()

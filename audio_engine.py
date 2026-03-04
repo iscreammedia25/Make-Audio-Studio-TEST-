@@ -30,7 +30,12 @@ def get_voices(api_key):
         voices = response.json().get('voices', [])
         return {v['name']: {'id': v['voice_id'], 'preview': v.get('preview_url')} for v in voices}
     except requests.exceptions.HTTPError as e:
-        return {"error": f"HTTP 오류 발생: {e.response.status_code} - {e.response.text}"}
+        status_code = e.response.status_code
+        if status_code == 401:
+            return {"error": "API Key가 유효하지 않거나 권한이 부족합니다."}
+        elif status_code == 402:
+            return {"error": "결제 단계 오류(402): 무료 요금제에서는 라이브러리 보이스를 API로 사용할 수 없습니다. 기본 보이스(My Voices에 등록된 보이스)를 사용해 주세요."}
+        return {"error": f"HTTP 오류 발생: {status_code} - {e.response.text}"}
     except Exception as e:
         return {"error": f"예상치 못한 오류: {str(e)}"}
 
@@ -57,7 +62,10 @@ def generate_audio(api_key, text, voice_id):
         response.raise_for_status()
         return response.content
     except requests.exceptions.HTTPError as e:
-        return {"error": f"HTTP 오류 발생: {e.response.status_code} - {e.response.text}"}
+        status_code = e.response.status_code
+        if status_code == 402:
+            return {"error": "요금제 제한(402): 무료 요금제는 보이스 라이브러리의 목소리를 API로 호출할 수 없습니다. ElevenLabs 사이트의 'My Voices'에 있는 기본 보이스를 선택하거나 요금제를 업그레이드하세요."}
+        return {"error": f"HTTP 오류 발생: {status_code} - {e.response.text}"}
     except Exception as e:
         return {"error": f"예상치 못한 오류: {str(e)}"}
 
