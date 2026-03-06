@@ -124,7 +124,7 @@ st.title("🎙️ 동화 대본 자동 더빙 및 편집 에이전트")
 
 # 1. 대본 입력 섹션
 st.header("1. 대본 입력 및 AI 분석")
-script_text = st.text_area("대본을 입력하세요 (예: [SC01] 내레이션 \"대사\")", height=200)
+script_text = st.text_area("대본을 입력하세요 (예: #SC01 내레이션 \"대사\")", height=200)
 
 if 'script_parsed' not in st.session_state:
     st.session_state.script_parsed = False
