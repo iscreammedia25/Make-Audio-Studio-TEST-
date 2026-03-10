@@ -12,7 +12,7 @@ st.set_page_config(page_title="동화 대본 자동 더빙 에이전트", layout
 if 'api_key' not in st.session_state:
     st.session_state.api_key = ""
 if 'gemini_api_key' not in st.session_state:
-    st.session_state.gemini_api_key = "AIzaSyBjgNTLf2IcNalpD8y_3OYKLb0NzfHFAv4" # Default for convenience
+    st.session_state.gemini_api_key = "" # Default for convenience
 if 'voices' not in st.session_state:
     st.session_state.voices = {}
 if 'parsed_data' not in st.session_state:
