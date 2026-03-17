@@ -4,6 +4,10 @@ import audio_engine
 import exporter
 import json
 import llm_helper
+import moviepy as mp
+import tempfile
+import os
+import io
 
 # 페이지 설정
 st.set_page_config(page_title="동화 대본 자동 더빙 에이전트", layout="wide")
@@ -29,6 +33,25 @@ if 'character_voice_mappings' not in st.session_state:
     st.session_state.character_voice_mappings = {}
 if 'character_confirmed' not in st.session_state:
     st.session_state.character_confirmed = False
+if 'cloned_voice_id' not in st.session_state:
+    st.session_state.cloned_voice_id = None
+if 'cloned_voice_bytes' not in st.session_state:
+    st.session_state.cloned_voice_bytes = None
+if 'last_uploaded_file_name' not in st.session_state:
+    st.session_state.last_uploaded_file_name = None
+
+# 전체 리셋 함수
+def reset_all_state():
+    st.session_state.script_parsed = False
+    st.session_state.parsed_data = []
+    st.session_state.audio_cache = {}
+    st.session_state.voice_mappings = {}
+    st.session_state.characters = {}
+    st.session_state.character_voice_mappings = {}
+    st.session_state.character_confirmed = False
+    st.session_state.cloned_voice_id = None
+    st.session_state.cloned_voice_bytes = None
+    st.session_state.cloned_char_name = None
 
 # 커스텀 보이스 셀렉터 헬퍼 함수
 def voice_selector_ui(key_label, current_voice_id, voices_dict, container_key):
@@ -71,6 +94,9 @@ def voice_selector_ui(key_label, current_voice_id, voices_dict, container_key):
                 if v_preview:
                     if col_play.button("🔊", key=f"p_{container_key}_{v_id}", help="샘플 듣기"):
                         st.audio(v_preview, format="audio/mpeg", autoplay=True)
+                elif v_id == st.session_state.get('cloned_voice_id') and st.session_state.get('cloned_voice_bytes'):
+                    if col_play.button("🔊", key=f"p_{container_key}_{v_id}", help="복제된 원본 샘플 듣기"):
+                        st.audio(st.session_state.cloned_voice_bytes, format="audio/mpeg", autoplay=True)
                 
                 if col_sel.button("선택" if not is_selected else "✅", key=f"s_{container_key}_{v_id}", type=btn_type, use_container_width=True):
                     return v_id
@@ -109,11 +135,42 @@ with st.sidebar:
     st.subheader("Gemini 설정")
     gemini_key_input = st.text_input("Gemini API Key", value=st.session_state.gemini_api_key, type="password")
     if st.button("Gemini Key 적용"):
-         if gemini_key_input:
-             st.session_state.gemini_api_key = gemini_key_input.strip()
-             st.success("Gemini API Key가 저장되었습니다.")
-         else:
-             st.warning("Gemini API Key를 입력해 주세요.")
+        if gemini_key_input:
+            clean_gemini_key = gemini_key_input.strip()
+            st.session_state.gemini_api_key = clean_gemini_key
+            with st.spinner("Gemini 연결 확인 중..."):
+                try:
+                    from google import genai
+                    client = genai.Client(api_key=clean_gemini_key)
+                    models = list(client.models.list())
+                    model_names = [m.name for m in models]
+                    
+                    # 지능형 모델 선택: 해당 키가 지원하는 가장 좋은 모델 찾기
+                    preferred_models = [
+                        "models/gemini-2.0-flash", 
+                        "models/gemini-1.5-flash", 
+                        "models/gemini-1.5-pro",
+                        "models/gemini-1.5-flash-8b"
+                    ]
+                    
+                    best_model = None
+                    for pm in preferred_models:
+                        if any(pm in name for name in model_names):
+                            best_model = pm
+                            break
+                    
+                    if best_model:
+                        st.session_state.gemini_model = best_model
+                        st.success(f"✅ Gemini 인증 성공! 현재 키에 최적화된 모델({best_model})이 설정되었습니다.")
+                    else:
+                        # 폴백: 리스트의 첫 번째 모델 사용
+                        st.session_state.gemini_model = model_names[0] if model_names else "models/gemini-1.5-flash"
+                        st.warning(f"⚠️ 권장 모델을 찾지 못해 목록의 첫 번째 추출된 모델({st.session_state.gemini_model})을 사용합니다.")
+                except Exception as e:
+                    st.error(f"❌ Gemini 연결 테스트 실패: {str(e)}")
+                    st.info("API 키가 정확한지, 혹은 할당량(limit)이 0이 아닌지 확인해 주세요.")
+        else:
+            st.warning("Gemini API Key를 입력해 주세요.")
 
     st.divider()
     category = st.radio("동화 카테고리", ["오리지널(OG)", "클래식(CS)"])
@@ -122,8 +179,94 @@ with st.sidebar:
 
 st.title("🎙️ 동화 대본 자동 더빙 및 편집 에이전트")
 
-# 1. 대본 입력 섹션
-st.header("1. 대본 입력 및 AI 분석")
+# Step 1: 에셋 생성 (보이스 클로닝)
+st.header("Step 1: 캐릭터 목소리 복제하기 (에셋 생성)")
+with st.container(border=True):
+    uploaded_file = st.file_uploader("캐릭터 인사 영상(mp4) 또는 음성(mp3, wav) 업로드", type=['mp4', 'mp3', 'wav'], key="voice_uploader")
+    
+    # 새로운 파일 업로드 시 리셋 트리거
+    if uploaded_file is not None and uploaded_file.name != st.session_state.last_uploaded_file_name:
+        reset_all_state()
+        st.session_state.last_uploaded_file_name = uploaded_file.name
+        st.rerun()
+
+    if uploaded_file:
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            char_name = st.text_input("복제할 캐릭터 이름", placeholder="예: 아기돼지, 늑대 등")
+        
+        if st.button("✨ 목소리 에셋으로 저장"):
+            if not char_name:
+                st.warning("캐릭터 이름을 입력해 주세요.")
+            elif not st.session_state.api_key:
+                st.error("사이드바에서 ElevenLabs API Key를 먼저 설정해 주세요.")
+            else:
+                with st.spinner("1단계: 배경음악 및 노이즈 제거 중... (Audio Isolation)"):
+                    try:
+                        # 오디오 추출 처리
+                        file_ext = os.path.splitext(uploaded_file.name)[1].lower()
+                        raw_audio_bytes = None
+                        
+                        if file_ext == '.mp4':
+                            # 임시 파일로 저장 후 처리
+                            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_mp4:
+                                tmp_mp4.write(uploaded_file.getvalue())
+                                tmp_mp4_path = tmp_mp4.name
+                            
+                            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp_mp3:
+                                tmp_mp3_path = tmp_mp3.name
+                                
+                            video = mp.VideoFileClip(tmp_mp4_path)
+                            video.audio.write_audiofile(tmp_mp3_path, logger=None)
+                            
+                            with open(tmp_mp3_path, "rb") as f:
+                                raw_audio_bytes = f.read()
+                            
+                            video.close()
+                            # 임시 파일 삭제
+                            os.unlink(tmp_mp4_path)
+                            os.unlink(tmp_mp3_path)
+                        else:
+                            raw_audio_bytes = uploaded_file.getvalue()
+                        
+                        # Audio Isolation API 연동 (배경음악 제거)
+                        isolation_res = audio_engine.isolate_audio(st.session_state.api_key, raw_audio_bytes)
+                        if not isolation_res['success']:
+                            st.error(f"오디오 정제 실패: {isolation_res['error']}")
+                            st.stop()
+
+                        clean_audio_bytes = isolation_res['audio_bytes']
+                        st.info("🎨 오디오 정제 완료! 보이스 클로닝을 시작합니다...")
+
+                        # ElevenLabs API 호출 (정제된 음성으로 클로닝)
+                        with st.spinner("2단계: 정제된 목소리로 보이스 클로닝 중..."):
+                            res = audio_engine.add_voice(st.session_state.api_key, char_name, clean_audio_bytes)
+                            
+                            if res['success']:
+                                st.session_state.cloned_voice_id = res['voice_id']
+                                st.session_state.cloned_voice_bytes = clean_audio_bytes # 정제된 목소리 저장
+                                st.success(f"✅ '{char_name}' 목소리 정제 및 복제 완료! (ID: {res['voice_id']})")
+                                
+                                # 보이스 목록 새로고침
+                                voices = audio_engine.get_voices(st.session_state.api_key)
+                                if not isinstance(voices, dict) or "error" not in voices:
+                                    st.session_state.voices = voices
+                                    # 새 목소리를 캐릭터 맵핑에 미리 넣어둠 (Step 3에서 자동 선택되게)
+                                    st.session_state.cloned_char_name = char_name
+                                st.rerun()
+                            else:
+                                st.error(f"복제 실패: {res['error']}")
+                    except Exception as e:
+                        st.error(f"처리 중 오류 발생: {str(e)}")
+        
+        # 복제된 목소리 미리보기 추가
+        if st.session_state.get('cloned_voice_id') and st.session_state.get('cloned_voice_bytes'):
+            st.divider()
+            st.write(f"🎧 **복제된 '{st.session_state.get('cloned_char_name', '캐릭터')}' 목소리 미리듣기 (정제본)**")
+            st.audio(st.session_state.cloned_voice_bytes, format="audio/mpeg")
+
+st.divider()
+st.header("Step 2: 대본 입력 및 AI 분석")
 script_text = st.text_area("대본을 입력하세요 (예: #SC01 내레이션 \"대사\")", height=200)
 
 if 'script_parsed' not in st.session_state:
@@ -135,9 +278,10 @@ if st.button("AI 분석하기 (대본 매칭)"):
     elif not st.session_state.get('gemini_api_key'):
         st.error("좌측 사이드바에서 Gemini API Key를 입력해 주세요.")
     else:
-        with st.spinner("Gemini AI가 대본을 분석하여 캐릭터를 추출하고 있습니다..."):
+        with st.spinner(f"Gemini AI({st.session_state.get('gemini_model', 'default')})가 대본을 분석 중입니다..."):
             # 1단계: Gemini를 통한 캐릭터 추출 (대사 치는 캐릭터만)
-            res = llm_helper.extract_characters_via_gemini(st.session_state.gemini_api_key, script_text)
+            best_model = st.session_state.get('gemini_model', 'gemini-1.5-flash')
+            res = llm_helper.extract_characters_via_gemini(st.session_state.gemini_api_key, script_text, model_name=best_model)
             if not res['success']:
                 st.error(res['error'])
             else:
@@ -154,6 +298,18 @@ if st.button("AI 분석하기 (대본 매칭)"):
                     # 세그먼트 매칭 초기화
                     st.session_state.voice_mappings = {item['segment_id']: "" for item in parsed}
                     st.session_state.character_voice_mappings = {name: "" for name in st.session_state.characters}
+                    
+                    # 복제된 보이스 자동 매칭
+                    if st.session_state.get('cloned_char_name') and st.session_state.get('cloned_voice_id'):
+                        c_name = st.session_state.cloned_char_name
+                        v_id = st.session_state.cloned_voice_id
+                        if c_name in st.session_state.character_voice_mappings:
+                            st.session_state.character_voice_mappings[c_name] = v_id
+                            # 개별 세그먼트에도 적용
+                            for item in st.session_state.parsed_data:
+                                if item.get('character') == c_name:
+                                    st.session_state.voice_mappings[item['segment_id']] = v_id
+
                     st.session_state.script_parsed = True
                     st.session_state.character_confirmed = False
                     st.rerun()
@@ -393,6 +549,14 @@ if st.session_state.get('parsed_data') and st.session_state.get('character_confi
     st.divider()
     st.header("3. 음원 생성 및 미리보기")
     
+    # 발화 속도 조절 슬라이더 추가
+    col_speed1, col_speed2 = st.columns([2, 3])
+    with col_speed1:
+        speech_speed = st.slider("🚀 발화 속도 조절 (Pitch 유지)", min_value=0.7, max_value=1.5, value=1.0, step=0.1, format="%.1fx")
+    with col_speed2:
+        st.write("") # 간격 조절
+        st.info("💡 1.0x는 원본 속도이며, 수정 후 '전체 음원 생성'을 다시 눌러주세요.")
+    
     if st.button("✨ 전체 음원 생성", use_container_width=True):
         if not st.session_state.api_key:
             st.error("API Key가 필요합니다.")
@@ -426,6 +590,12 @@ if st.session_state.get('parsed_data') and st.session_state.get('character_confi
                 if segment_audios:
                     # 세그먼트들을 하나로 병합하여 라인 캐시에 저장
                     merged_audio = audio_engine.merge_audio(segment_audios)
+                    
+                    # 발화 속도 조절 후처리 (피치 유지)
+                    if speech_speed != 1.0:
+                        with st.spinner(f"속도 조절 중 ({speech_speed}x)..."):
+                            merged_audio = audio_engine.apply_speed_control(merged_audio, speech_speed)
+                            
                     st.session_state.audio_cache[line_key] = merged_audio
                 
                 progress_bar.progress((idx + 1) / total_lines)

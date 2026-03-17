@@ -2,7 +2,7 @@ from google import genai
 import json
 import re
 
-def extract_characters_via_gemini(api_key, script_text):
+def extract_characters_via_gemini(api_key, script_text, model_name='gemini-1.5-flash'):
     """
     Gemini API를 호출하여 동화 대본에서 캐릭터 이름, 성별, 나이, 무드를 추출합니다.
     """
@@ -12,6 +12,10 @@ def extract_characters_via_gemini(api_key, script_text):
     try:
         # Initialize the new SDK client
         client = genai.Client(api_key=api_key)
+        
+        # 인코딩 오류 방지: 특수문자(em-dash 등)를 표준 문자로 치환
+        # 일부 환경에서 \u2014(—) 등의 문자가 ASCII로 인코딩되려 할 때 오류가 발생할 수 있음
+        safe_script = script_text.replace('\u2014', '-').replace('\u2013', '-')
         
         prompt = f"""
 다음은 동화 대본입니다. 이 대본에 등장하여 **직접 대사(" " 또는 ' ' 안의 말)를 하거나 생각 문장(따옴표 유무 무관)을 말하는 캐릭터만** 정확히 추출해주세요. 대사가 전혀 없는 배경 인물이나 단순 언급된 대상은 절대 포함하지 마세요.
@@ -32,10 +36,12 @@ def extract_characters_via_gemini(api_key, script_text):
 ]
 
 대본 내용:
-{script_text}
+{safe_script}
 """
+        # API 호출 (동적으로 결정된 모델 이름 사용)
+        clean_model_id = model_name.replace("models/", "") # SDK 형식에 맞춤
         response = client.models.generate_content(
-            model='gemini-2.5-flash',
+            model=clean_model_id,
             contents=prompt,
         )
         

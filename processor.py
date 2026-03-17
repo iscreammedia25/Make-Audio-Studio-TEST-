@@ -29,50 +29,43 @@ def resolve_pronoun(pronoun, text_up_to_here, characters_list):
         word_lower = word.lower()
         if word_lower in blacklist: continue
         
+        # 성별 기반 우선 순위 매칭
         if pronoun.lower() in ['he', 'his', 'him']:
-            if word_lower in he_priorities:
-                return word
+            if word_lower in he_priorities: return word
         elif pronoun.lower() in ['she', 'her']:
-            if word_lower in she_priorities:
-                return word
-                
-    # Second pass: Look for any available valid character
+            if word_lower in she_priorities: return word
+            
+    # 성별 정보가 없거나 일치하는 게 없으면 가장 인접한 캐릭터 반환
     for match in reversed(matches):
         word = match.group(0)
-        word_lower = word.lower()
-        if word_lower in blacklist: continue
-        return word
+        if word.lower() not in blacklist: return word
                 
     return None
 
-
 def parse_script(text, confirmed_characters_list=None):
     """
-    #SC01 태그로 씬 분할
-    씬을 마침표/물음표/느낌표 기준으로 문장(Line) 단위로 분할 (따옴표 내부 보호)
-    각 문장을 큰따옴표(" ") 또는 작은따옴표(' ') 기준으로 세그먼트(Segment) 분할
-    내레이션 세그먼트에서 화자를 추측하여 매칭
-    반환: (parsed_data, original_text)
+    1. #SC01 태그 분할
+    2. 스마트 따옴표 정규화
+    3. 문장 단위 분할 (따옴표 내부 보호)
+    4. 세그먼트 분할 및 화자 매칭 규칙(직접/대명사/상태유지) 적용
     """
+    text = text.replace('“', '"').replace('”', '"').replace('‘', "'").replace('’', "'")
+    text = text.replace('—', '-').replace('–', '-')
+    
     scene_pattern = r'(#SC\d+)'
     parts = re.split(scene_pattern, text)
     
     parsed_data = []
-    last_speaker = "캐릭터"
-    last_named_character = None
-    blacklist = {
-        'and', 'then', 'but', 'so', 'although', 'however', 'therefore', 
-        'meanwhile', 'suddenly', 'finally', 'because', 'since', 'while',
-        'the', 'this', 'that', 'someone', 'everyone', 'anybody', 'nobody',
-        'he', 'she', 'it', 'they', 'we', 'i', 'you', 'one', 'on', 'pop', 'bang',
-        'when', 'wow', 'yes', 'no', 'oh', 'ah', 'well', 'too', 'now', 'all', 'soon', 'there',
-        'his', 'her', 'their', 'my', 'your', 'our'
-    }
-
+    global_last_speaker = "캐릭터" # 전체 대본 기준 상태 유지 플래그
+    
+    # 발화 동사 목록 확장
+    verbs_regex = r'(?:says|said|asked|exclaimed|shouted|shouts|replied|cried|whispered|whispers|thought|added|lied|commanded|cheered|ordered|begged|groaned|sighed|told|sent|answered)'
+    
     for i in range(1, len(parts), 2):
         scene_tag = parts[i].lstrip('#')
         scene_content = parts[i+1].strip()
         
+        # 문장 분리 로직 (따옴표 내 문장부호 보호)
         sentences = []
         pattern = re.compile(r'"[^"]*"|\'[^\']*\'|[.!?]+(?:\s+|$)')
         start = 0
@@ -80,104 +73,71 @@ def parse_script(text, confirmed_characters_list=None):
             if any(c in match.group() for c in '.!?') and not match.group().startswith(('"', "'")):
                 sentences.append(scene_content[start:match.end()].strip())
                 start = match.end()
-        
-        remaining = scene_content[start:].strip()
-        if remaining:
-            sentences.append(remaining)
-        if not sentences:
-            sentences = [scene_content]
+        if scene_content[start:].strip(): sentences.append(scene_content[start:].strip())
 
         for s_idx, sentence in enumerate(sentences):
-            if not sentence.strip():
-                continue
-                
+            if not sentence.strip(): continue
             line_id = f"{s_idx + 1:02d}"
-            # Use re.split to correctly handle apostrophes inside dialogues and preserve them in narration
-            # Quotes are used as speech markers, but single quotes can also be apostrophes.
+            
+            # 대사와 내레이터 태그 분리
             segments = re.split(r'("[^"\n]*"|\'[^\'\n]*\')', sentence)
-            
             line_segments = []
-            current_line_speaker = None
+            line_speaker = None # 현재 문장에서 발견된 화자
             
+            # 1차 패스: 타입 분류 및 현재 문장의 화자 찾기
+            temp_segs = []
             for seg in segments:
-                if not seg or not seg.strip():
-                    continue
+                if not seg or not seg.strip(): continue
                 
                 if (seg.startswith('"') and seg.endswith('"')) or (seg.startswith("'") and seg.endswith("'")):
-                    dialogue = seg[1:-1].strip()
-                    # 대사 내부 문장 분리 로직 추가 (. ! ? 뒤에 공백이 오면 분리)
-                    # 단, 너무 쪼개지지 않도록 마지막 문장부호는 보존
-                    dialogue_sentences = re.split(r'(?<=[.!?])\s+', dialogue)
-                    for ds in dialogue_sentences:
-                        if ds.strip():
-                            line_segments.append({'type': '대사', 'text': ds.strip()})
+                    # 대사 세그먼트
+                    dialogue_text = seg[1:-1].strip()
+                    temp_segs.append({'type': '대사', 'text': dialogue_text})
                 else:
+                    # 내레이션 세그먼트 -> 화자 추출 시도
                     narration = seg.strip()
-                    # Dialogue verbs pattern
-                    verbs_regex = r'(?:exclaimed|said|asked|shouted|replied|cried|whispered|sought|added|lied|commanded|cheered|ordered|begged|groaned|sighed|told|sent|answered)'
                     
-                    # AI가 추출한 캐릭터 이름들을 우선적으로 매칭
+                    # AI 추출 이름 우선 매칭 정규식
                     if confirmed_characters_list:
                         char_names_regex = r'(' + '|'.join(re.escape(c) for c in confirmed_characters_list.keys()) + r')'
                         noun_phrase = rf'(?:(?:the|a|an|his|her|their)\s+)?{char_names_regex}'
                     else:
                         noun_phrase = rf'(?:(?:the|a|an|his|her|their)\s+)?([A-Z][a-z]+)'
-                        
-                    speaker_match = re.search(rf'{verbs_regex}\s+{noun_phrase}|{noun_phrase}\s+{verbs_regex}', narration, re.IGNORECASE)
                     
-                    # 2. 대명사 인식
-                    pronoun_match = re.search(rf'\b(he|she|they|it)\b\s+{verbs_regex}|{verbs_regex}\s+\b(he|she|they|it)\b', narration, re.IGNORECASE)
+                    # 규칙 1: 직접 매칭 (Milo says)
+                    speaker_match = re.search(rf'\b{verbs_regex}\b\s+{noun_phrase}|{noun_phrase}\s+\b{verbs_regex}\b', narration, re.IGNORECASE)
                     
-                    found_speaker = None
+                    if speaker_match:
+                        # 캡처된 그룹 중 None이 아닌 첫 번째 값 추출
+                        found = next((g for g in speaker_match.groups() if g is not None), None)
+                        if found: line_speaker = found
                     
-                    if pronoun_match:
-                        pronoun = pronoun_match.group(1) or pronoun_match.group(2)
-                        
-                        # Find the first occurrence of the pronoun match within the CURRENT sentence.
-                        sentence_idx = sentence.find(pronoun_match.group(0))
-                        
-                        # Then find where this sentence is located within the entire text
-                        # to get the global index.
-                        global_sentence_idx = text.find(sentence)
-                        
-                        if global_sentence_idx != -1 and sentence_idx != -1:
-                            idx = global_sentence_idx + sentence_idx
-                            text_up_to_here = text[:max(idx, 0)]
-                        else:
-                            # fallback if find fails
-                            text_up_to_here = text
-                        
-                        resolved = resolve_pronoun(pronoun, text_up_to_here, confirmed_characters_list)
-                        if resolved:
-                            found_speaker = resolved
-                            last_named_character = found_speaker
-                        elif last_named_character: # fallback to the VERY last remembered name if lookbehind fails
-                            found_speaker = last_named_character
-                            
-                    elif speaker_match:
-                        # Extract the first non-None capturing group which corresponds to the noun
-                        groups = speaker_match.groups()
-                        temp_name = next((g for g in groups if g is not None), "")
-                        
-                        if temp_name and temp_name.lower() not in blacklist:
-                            found_speaker = temp_name
-                            last_named_character = found_speaker
-                    
-                    if found_speaker:
-                        current_line_speaker = found_speaker
-                        last_speaker = found_speaker
-                    
-                    line_segments.append({'type': '내레이션', 'text': narration, 'speaker': '내레이션'})
+                    # 규칙 2: 대명사 해결 (He said) -> 위에서 화자를 못 찾았을 때만
+                    if not line_speaker:
+                        pronoun_match = re.search(rf'\b(he|she|they|it)\b\s+{verbs_regex}|{verbs_regex}\s+\b(he|she|they|it)\b', narration, re.IGNORECASE)
+                        if pronoun_match:
+                            pronoun = pronoun_match.group(1) or pronoun_match.group(2)
+                            # 현재 문장까지의 전체 텍스트를 넘겨 역추적
+                            text_up_to_here = text[:text.find(sentence) + sentence.find(narration)]
+                            resolved = resolve_pronoun(pronoun, text_up_to_here, confirmed_characters_list)
+                            if resolved: line_speaker = resolved
+
+                    temp_segs.append({'type': '내레이션', 'text': narration})
+
+            # 2차 패스: 화자 확정 및 저장
+            # 규칙 3: 상태 유지 (현재 문장에 화자가 없으면 직전 화자 사용)
+            final_speaker = line_speaker or global_last_speaker
+            global_last_speaker = final_speaker # 다음 문장으로 상태 전파
             
-            final_speaker = current_line_speaker or last_speaker
-            for seg_idx, seg in enumerate(line_segments):
-                if seg['type'] == '대사':
-                    seg['speaker'] = final_speaker
+            for seg_idx, seg in enumerate(temp_segs):
+                char_label = final_speaker if seg['type'] == '대사' else '내레이션'
                 parsed_data.append({
                     'scene': scene_tag, 'line': line_id, 'seg_idx': seg_idx,
                     'segment_id': f"{scene_tag}_{line_id}_{seg_idx}",
-                    'type': seg['type'], 'character': seg['speaker'], 'text': seg['text']
+                    'type': seg['type'], 'character': char_label, 'text': seg['text']
                 })
+                    
+    return parsed_data, text
                     
     return parsed_data, text
 
