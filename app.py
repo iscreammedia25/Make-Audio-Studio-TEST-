@@ -545,17 +545,68 @@ if st.session_state.get('parsed_data') and st.session_state.get('character_confi
                 st.session_state.voice_mappings.pop(key, None)
                 st.rerun()
 
+    # 속도 조절 세션 초기화
+    if 'speed_settings' not in st.session_state:
+        st.session_state.speed_settings = {"내레이션": 1.0}
+    
     # 3. 음원 생성 및 미리보기 섹션
     st.divider()
     st.header("3. 음원 생성 및 미리보기")
     
-    # 발화 속도 조절 슬라이더 추가
-    col_speed1, col_speed2 = st.columns([2, 3])
-    with col_speed1:
-        speech_speed = st.slider("🚀 발화 속도 조절 (Pitch 유지)", min_value=0.7, max_value=1.5, value=1.0, step=0.1, format="%.1fx")
-    with col_speed2:
-        st.write("") # 간격 조절
-        st.info("💡 1.0x는 원본 속도이며, 수정 후 '전체 음원 생성'을 다시 눌러주세요.")
+    # 속도 조절 모드 선택
+    speed_mode = st.radio("🚀 속도 조절 모드", ["일괄 조정", "개별 조정(보이스/내레이션)"], horizontal=True)
+    
+    if speed_mode == "일괄 조정":
+        bulk_speed = st.slider("전체 발화 속도", 0.7, 1.5, 1.0, 0.1, format="%.1fx")
+        # 모든 항목의 속도를 동일하게 설정
+        st.session_state.speed_settings = {k: bulk_speed for k in st.session_state.speed_settings.keys()}
+        st.session_state.speed_settings["default"] = bulk_speed
+    else:
+        # 대본에서 실제 사용된 캐릭터 이름들 추출 (내레이션 제외)
+        used_chars = sorted(list(set([item['character'] for item in st.session_state.parsed_data if item['character'] != "내레이션"])))
+        
+        st.write("각 보이스별 속도를 개별 설정하세요.")
+        cols = st.columns(len(used_chars) + 1)
+        
+        # 내레이션 조절
+        with cols[0]:
+            st.session_state.speed_settings["내레이션"] = st.slider("🎙️ 내레이션", 0.7, 1.5, st.session_state.speed_settings.get("내레이션", 1.0), 0.1, format="%.1fx")
+        
+        # 캐릭터 조절
+        for i, char in enumerate(used_chars):
+            with cols[i+1]:
+                st.session_state.speed_settings[char] = st.slider(f"🎭 {char}", 0.7, 1.5, st.session_state.speed_settings.get(char, 1.0), 0.1, format="%.1fx")
+
+    # 미리듣기 샘플 생성 구역
+    st.write("---")
+    col_sample1, col_sample2 = st.columns([1, 2])
+    with col_sample1:
+        if st.button("🎧 속도 미리듣기 샘플 생성"):
+            if not st.session_state.api_key:
+                st.error("API Key를 먼저 입력해 주세요.")
+            else:
+                with st.spinner("샘플 생성 중..."):
+                    test_text = "안녕하세요. 지금 설정하신 발화 속도가 적용된 샘플 음성입니다."
+                    # 사용자 계정에서 실제 사용 가능한 보이스 ID 찾기 (404 방지)
+                    default_voice_id = None
+                    if st.session_state.get('voices'):
+                        # 'manual'이 아닌 실제 보이스 ID 추출
+                        available_voices = [v['id'] if isinstance(v, dict) else v for k, v in st.session_state.voices.items() if v != 'manual']
+                        if available_voices: default_voice_id = available_voices[0]
+                    
+                    if not default_voice_id:
+                        st.error("사용 가능한 보이스가 없습니다. Step 1에서 보이스를 먼저 로드해 주세요.")
+                    else:
+                        sample_audio = audio_engine.generate_audio(st.session_state.api_key, test_text, default_voice_id)
+                        if isinstance(sample_audio, bytes):
+                            target_speed = st.session_state.speed_settings.get("내레이션", 1.0)
+                            final_sample = audio_engine.apply_speed_control(sample_audio, target_speed)
+                            st.audio(final_sample, format="audio/mpeg")
+                            st.success("샘플 생성 완료!")
+                        else:
+                            st.error(f"샘플 생성 실패: {sample_audio}")
+
+    st.info("💡 팁: 캐릭터의 성격(톤)에 맞춰 목소리의 감정 표현이 자동으로 미세 조정됩니다.")
     
     if st.button("✨ 전체 음원 생성", use_container_width=True):
         if not st.session_state.api_key:
@@ -572,30 +623,47 @@ if st.session_state.get('parsed_data') and st.session_state.get('character_confi
                     lines_to_process[line_key] = []
                 lines_to_process[line_key].append(item)
                 
+            # 캐릭터별 톤(Tone) 정보 매핑 준비
+            mood_map = {c.get('name', ''): c.get('tone', '') for c in st.session_state.get('llm_characters_raw', [])}
+            
             total_lines = len(lines_to_process)
             for idx, (line_key, segments) in enumerate(lines_to_process.items()):
-                status_text.text(f"문장 생성 중: {line_key} ({idx+1}/{total_lines})...")
+                status_text.text(f"음원 생성 중: {line_key}...")
                 
                 segment_audios = []
                 for seg in segments:
                     voice_id = st.session_state.voice_mappings.get(seg['segment_id'])
                     
                     if voice_id:
-                        audio_bytes = audio_engine.generate_audio(st.session_state.api_key, seg['text'], voice_id)
-                        if isinstance(audio_bytes, dict) and "error" in audio_bytes:
-                            st.error(f"세그먼트 생성 실패 ({seg['segment_id']}): {audio_bytes['error']}")
-                        else:
+                        # 무드 성격에 따른 ElevenLabs 파라미터(Stability) 조절
+                        char_mood = mood_map.get(seg['character'], "보통").lower()
+                        stability = 0.5
+                        if any(kw in char_mood for kw in ['슬픈', '차분한', 'sad', 'calm']):
+                            stability = 0.8 # 더 차분하고 가라앉은 톤
+                        elif any(kw in char_mood for kw in ['활기찬', '화난', '기쁜', 'angry', 'excited', 'happy']):
+                            stability = 0.3 # 감정의 변화가 크고 생생한 톤
+                        
+                        audio_bytes = audio_engine.generate_audio(
+                            st.session_state.api_key, 
+                            seg['text'], 
+                            voice_id,
+                            stability=stability
+                        )
+                        
+                        if isinstance(audio_bytes, bytes):
+                            # 세그먼트 캐릭터/타입에 따른 정밀한 개별 속도 적용
+                            char_name = seg.get('character', '내레이션')
+                            current_speed = st.session_state.speed_settings.get(char_name, 1.0)
+                            
+                            if current_speed != 1.0:
+                                audio_bytes = audio_engine.apply_speed_control(audio_bytes, current_speed)
                             segment_audios.append(audio_bytes)
+                        else: # Handle error case from generate_audio
+                            st.error(f"세그먼트 생성 실패 ({seg['segment_id']}): {audio_bytes['error']}")
                 
                 if segment_audios:
                     # 세그먼트들을 하나로 병합하여 라인 캐시에 저장
                     merged_audio = audio_engine.merge_audio(segment_audios)
-                    
-                    # 발화 속도 조절 후처리 (피치 유지)
-                    if speech_speed != 1.0:
-                        with st.spinner(f"속도 조절 중 ({speech_speed}x)..."):
-                            merged_audio = audio_engine.apply_speed_control(merged_audio, speech_speed)
-                            
                     st.session_state.audio_cache[line_key] = merged_audio
                 
                 progress_bar.progress((idx + 1) / total_lines)
