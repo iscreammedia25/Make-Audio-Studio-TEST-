@@ -266,19 +266,37 @@ with st.container(border=True):
             st.audio(st.session_state.cloned_voice_bytes, format="audio/mpeg")
 
 st.divider()
-st.header("Step 2: 대본 입력 및 AI 분석")
-script_text = st.text_area("대본을 입력하세요 (예: #SC01 내레이션 \"대사\")", height=200)
+st.header("Step 2: 대본 파일 업로드 및 AI 분석")
+import pandas as pd
+script_file = st.file_uploader("대본 파일 업로드 (CSV 또는 Excel)", type=['csv', 'xlsx', 'xls'], key="script_uploader")
 
 if 'script_parsed' not in st.session_state:
     st.session_state.script_parsed = False
 
 if st.button("AI 분석하기 (대본 매칭)"):
-    if not script_text:
-        st.warning("대본을 입력해 주세요.")
+    if not script_file:
+        st.warning("대본 파일을 업로드해 주세요 (CSV/Excel).")
     elif not st.session_state.get('gemini_api_key'):
         st.error("좌측 사이드바에서 Gemini API Key를 입력해 주세요.")
     else:
         with st.spinner(f"Gemini AI({st.session_state.get('gemini_model', 'default')})가 대본을 분석 중입니다..."):
+            try:
+                if script_file.name.endswith('.csv'):
+                    df = pd.read_csv(script_file)
+                else:
+                    df = pd.read_excel(script_file)
+            except Exception as e:
+                st.error(f"파일 읽기 오류: {e}")
+                st.stop()
+                
+            required_cols = ['ID', 'Key', 'Text']
+            missing = [c for c in required_cols if c not in df.columns]
+            if missing:
+                st.error(f"업로드된 파일에 다음 필수 컬럼이 없습니다: {', '.join(missing)}")
+                st.stop()
+                
+            script_text = "\n".join(df['Text'].dropna().astype(str).tolist())
+            
             # 1단계: Gemini를 통한 캐릭터 추출 (대사 치는 캐릭터만)
             best_model = st.session_state.get('gemini_model', 'gemini-1.5-flash')
             res = llm_helper.extract_characters_via_gemini(st.session_state.gemini_api_key, script_text, model_name=best_model)
@@ -289,9 +307,9 @@ if st.button("AI 분석하기 (대본 매칭)"):
                 st.success("캐릭터 추출 완료! 대본 매칭을 진행합니다...")
                 
                 # 2단계: 실제 대본 파싱 (확정된 캐릭터 리스트 주입)
-                parsed, raw_text = processor.parse_script(script_text, st.session_state.llm_characters)
+                parsed, df_parsed = processor.parse_dataframe(df, st.session_state.llm_characters)
                 if not parsed:
-                    st.error("대본 텍스트 구조(#SC01 등)가 잘못되었습니다.")
+                    st.error("대본 텍스트 파싱 결과가 없습니다.")
                 else:
                     st.session_state.parsed_data = parsed
                     st.session_state.characters = st.session_state.llm_characters.copy()
@@ -438,32 +456,9 @@ if st.session_state.get('parsed_data') and st.session_state.get('character_confi
         # 1. 장면
         cols[0].write(f"**{item['scene']}**")
         
-        # 2. 순서
+        # 2. 순서 (ID / Line)
         with cols[1]:
-            # 기본적으로 Line 01부터 Line 10까지 선택지 제공, 그 이상의 라인이 있다면 포함시킴
-            line_options = [f"Line {n:02d}" for n in range(1, 11)]
-            
-            # 파싱된 item['line']이 숫자열 혹은 '03_new' 형태일 수 있음. 'Line ' 접두사를 포함해 통일
-            curr_raw_val = str(item['line'])
-            curr_display_val = f"Line {curr_raw_val}" if not curr_raw_val.startswith("Line ") else curr_raw_val
-            
-            # 현재 할당된 라인 번호가 1~10을 벗어난 숫자이거나 02_new 같은 문자열일 경우 선택지에 추가
-            if curr_display_val not in line_options:
-                line_options.append(curr_display_val)
-                line_options.sort() # 파이썬 문자열 기본 정렬(Line 01, Line 02, ...)
-                
-            selected_line_display = st.selectbox(
-                f"Line_{key}", 
-                options=line_options, 
-                index=line_options.index(curr_display_val), 
-                key=f"line_select_{key}", 
-                label_visibility="collapsed"
-            )
-            
-            selected_raw_val = selected_line_display.replace("Line ", "")
-            if selected_raw_val != curr_raw_val:
-                st.session_state.parsed_data[i]['line'] = selected_raw_val
-                st.rerun()
+            st.write(f"**{item['line']}**")
                 
         # 3. 캐릭터 수동 수정 (드롭다운)
         with cols[2]:
@@ -691,8 +686,8 @@ if st.session_state.get('parsed_data') and st.session_state.get('character_confi
             
             if line_key in st.session_state.audio_cache:
                 with st.container(border=True):
-                    cols = st.columns([1, 6, 2, 2])
-                    cols[0].write(f"**Line {segs[0]['line']}**")
+                    cols = st.columns([1.5, 5.5, 2, 2])
+                    cols[0].write(f"**ID: {segs[0]['line']}**")
                     
                     # 미리보기 텍스트 구성 (대사는 따옴표 포함)
                     content_html = ""
