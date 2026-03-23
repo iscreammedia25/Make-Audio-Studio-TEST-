@@ -9,6 +9,16 @@ import tempfile
 import os
 import io
 
+# 감정(Mood)별 ElevenLabs 파라미터 프리셋
+MOOD_PRESETS = {
+    "Neutral": {"stability": 0.5, "similarity_boost": 0.75, "style": 0.1},
+    "Happy": {"stability": 0.45, "similarity_boost": 0.8, "style": 0.4},
+    "Sad": {"stability": 0.72, "similarity_boost": 0.75, "style": 0.1},
+    "Angry": {"stability": 0.38, "similarity_boost": 0.85, "style": 0.7},
+    "Excited": {"stability": 0.32, "similarity_boost": 0.88, "style": 0.8},
+    "Whispering": {"stability": 0.88, "similarity_boost": 0.65, "style": 0.0}
+}
+
 # 페이지 설정
 st.set_page_config(page_title="동화 대본 자동 더빙 에이전트", layout="wide")
 
@@ -173,9 +183,9 @@ with st.sidebar:
             st.warning("Gemini API Key를 입력해 주세요.")
 
     st.divider()
-    category = st.radio("동화 카테고리", ["오리지널(OG)", "클래식(CS)"])
-    category_code = "OG" if category == "오리지널(OG)" else "CS"
-    story_no = st.text_input("스토리 번호 (예: 0001)", value="0001")
+    difficulty = st.radio("난이도 구분", ["Normal", "Easy", "Difficult"])
+    difficulty_suffix = {"Normal": "N_A", "Easy": "E_A", "Difficult": "D_A"}.get(difficulty, "N_A")
+    story_no = "" # UI에서 제거됨
 
 st.title("🎙️ 동화 대본 자동 더빙 및 편집 에이전트")
 
@@ -297,17 +307,18 @@ if st.button("AI 분석하기 (대본 매칭)"):
                 
             script_text = "\n".join(df['Text'].dropna().astype(str).tolist())
             
-            # 1단계: Gemini를 통한 캐릭터 추출 (대사 치는 캐릭터만)
+            # 1단계: Gemini를 통한 대본 메타데이터 추출 (캐릭터 + 세그먼트 감정)
             best_model = st.session_state.get('gemini_model', 'gemini-1.5-flash')
-            res = llm_helper.extract_characters_via_gemini(st.session_state.gemini_api_key, script_text, model_name=best_model)
+            res = llm_helper.extract_script_metadata_via_gemini(st.session_state.gemini_api_key, script_text, model_name=best_model)
             if not res['success']:
                 st.error(res['error'])
             else:
                 st.session_state.llm_characters = res['characters']
-                st.success("캐릭터 추출 완료! 대본 매칭을 진행합니다...")
+                st.session_state.segments_metadata = res['segments_metadata']
+                st.success("캐릭터 및 감정 분석 완료! 대본 매칭을 진행합니다...")
                 
-                # 2단계: 실제 대본 파싱 (확정된 캐릭터 리스트 주입)
-                parsed, df_parsed = processor.parse_dataframe(df, st.session_state.llm_characters)
+                # 2단계: 실제 대본 파싱 (확정된 캐릭터 리스트 및 AI 분석 데이터 주입)
+                parsed, df_parsed = processor.parse_dataframe(df, st.session_state.llm_characters, ai_metadata=st.session_state.segments_metadata)
                 if not parsed:
                     st.error("대본 텍스트 파싱 결과가 없습니다.")
                 else:
@@ -454,19 +465,27 @@ if st.session_state.get('parsed_data') and st.session_state.get('character_confi
         cols = st.columns([0.6, 1.1, 1.5, 4.3, 3.5, 1.0])
         
         # 1. 장면
-        cols[0].write(f"**{item['scene']}**")
+        cols[0].write(f"**{item.get('scene_num', item['scene'])}**")
         
-        # 2. 순서 (ID / Line)
+        # 2. 순서 (Sequence)
         with cols[1]:
-            st.write(f"**{item['line']}**")
+            st.write(f"**{item.get('seq_num', item['line'])}**")
                 
         # 3. 캐릭터 수동 수정 (드롭다운)
         with cols[2]:
             char_options = list(st.session_state.characters.keys())
-            if "내레이션" not in char_options:
-                char_options.append("내레이션")
-            
+            if "내레이션" not in char_options: char_options.append("내레이션")
             current_char = item['character']
+            
+            # 감정(Mood) 표시용 뱃지 스타일 정의
+            mood_colors = {
+                "Neutral": "gray", "Happy": "green", "Sad": "blue", 
+                "Angry": "red", "Excited": "orange", "Whispering": "purple"
+            }
+            mood = item.get('mood', 'Neutral')
+            m_color = mood_colors.get(mood, "gray")
+            
+            st.markdown(f'<span style="background-color: {m_color}22; color: {m_color}; padding: 2px 6px; border-radius: 4px; border: 1px solid {m_color}44; font-size: 0.8em; margin-bottom: 4px; display: inline-block;">Mood: {mood}</span>', unsafe_allow_html=True)
             if current_char not in char_options:
                 char_options.insert(0, current_char)
             
@@ -579,27 +598,42 @@ if st.session_state.get('parsed_data') and st.session_state.get('character_confi
         if st.button("🎧 속도 미리듣기 샘플 생성"):
             if not st.session_state.api_key:
                 st.error("API Key를 먼저 입력해 주세요.")
+            elif not st.session_state.parsed_data:
+                st.warning("대본 분석을 먼저 진행해 주세요.")
             else:
-                with st.spinner("샘플 생성 중..."):
-                    test_text = "안녕하세요. 지금 설정하신 발화 속도가 적용된 샘플 음성입니다."
-                    # 사용자 계정에서 실제 사용 가능한 보이스 ID 찾기 (404 방지)
-                    default_voice_id = None
-                    if st.session_state.get('voices'):
-                        # 'manual'이 아닌 실제 보이스 ID 추출
-                        available_voices = [v['id'] if isinstance(v, dict) else v for k, v in st.session_state.voices.items() if v != 'manual']
-                        if available_voices: default_voice_id = available_voices[0]
+                with st.spinner("캐릭터별 실제 대사로 샘플 생성 중..."):
+                    # 대상 캐릭터 목록 (내레이션 + 실제 대본의 캐릭터들)
+                    sample_chars = ["내레이션"] + sorted(list(set([item['character'] for item in st.session_state.parsed_data if item['character'] != "내레이션"])))
                     
-                    if not default_voice_id:
-                        st.error("사용 가능한 보이스가 없습니다. Step 1에서 보이스를 먼저 로드해 주세요.")
+                    # 결과를 담을 컬럼들
+                    cols_pre = st.columns(len(sample_chars))
+                    
+                    found_any = False
+                    for idx, char in enumerate(sample_chars):
+                        voice_id = st.session_state.get('all_narration_voice_id') if char == "내레이션" else st.session_state.character_voice_mappings.get(char)
+                        
+                        if voice_id:
+                            # 해당 캐릭터의 첫 번째 대사 찾기
+                            char_line = next((item['text'] for item in st.session_state.parsed_data if item['character'] == char), "설정된 대사가 없습니다.")
+                            
+                            found_any = True
+                            sample_audio = audio_engine.generate_audio(st.session_state.api_key, char_line, voice_id)
+                            
+                            if isinstance(sample_audio, bytes):
+                                target_speed = st.session_state.speed_settings.get(char, 1.0)
+                                final_sample = audio_engine.apply_speed_control(sample_audio, target_speed)
+                                with cols_pre[idx]:
+                                    st.write(f"**{char}** ({target_speed}x)")
+                                    st.caption(f"\"{char_line[:30]}...\"" if len(char_line) > 30 else f"\"{char_line}\"")
+                                    st.audio(final_sample, format="audio/mpeg")
+                            else:
+                                with cols_pre[idx]:
+                                    st.error(f"{char} 생성 실패")
+                    
+                    if not found_any:
+                        st.warning("보이스가 지정된 캐릭터가 없습니다. Step 2에서 보이스를 먼저 설정해 주세요.")
                     else:
-                        sample_audio = audio_engine.generate_audio(st.session_state.api_key, test_text, default_voice_id)
-                        if isinstance(sample_audio, bytes):
-                            target_speed = st.session_state.speed_settings.get("내레이션", 1.0)
-                            final_sample = audio_engine.apply_speed_control(sample_audio, target_speed)
-                            st.audio(final_sample, format="audio/mpeg")
-                            st.success("샘플 생성 완료!")
-                        else:
-                            st.error(f"샘플 생성 실패: {sample_audio}")
+                        st.success("실제 대사 기반 샘플 생성 완료!")
 
     st.info("💡 팁: 캐릭터의 성격(톤)에 맞춰 목소리의 감정 표현이 자동으로 미세 조정됩니다.")
     
@@ -630,19 +664,17 @@ if st.session_state.get('parsed_data') and st.session_state.get('character_confi
                     voice_id = st.session_state.voice_mappings.get(seg['segment_id'])
                     
                     if voice_id:
-                        # 무드 성격에 따른 ElevenLabs 파라미터(Stability) 조절
-                        char_mood = mood_map.get(seg['character'], "보통").lower()
-                        stability = 0.5
-                        if any(kw in char_mood for kw in ['슬픈', '차분한', 'sad', 'calm']):
-                            stability = 0.8 # 더 차분하고 가라앉은 톤
-                        elif any(kw in char_mood for kw in ['활기찬', '화난', '기쁜', 'angry', 'excited', 'happy']):
-                            stability = 0.3 # 감정의 변화가 크고 생생한 톤
+                        # 무드(Mood)에 따른 ElevenLabs 파라미터(Stability, Style 등) 정밀 조절
+                        seg_mood = seg.get('mood', 'Neutral')
+                        preset = MOOD_PRESETS.get(seg_mood, MOOD_PRESETS['Neutral'])
                         
                         audio_bytes = audio_engine.generate_audio(
                             st.session_state.api_key, 
                             seg['text'], 
                             voice_id,
-                            stability=stability
+                            stability=preset['stability'],
+                            similarity_boost=preset['similarity_boost'],
+                            style=preset['style']
                         )
                         
                         if isinstance(audio_bytes, bytes):
@@ -713,11 +745,11 @@ if st.session_state.get('parsed_data') and st.session_state.get('character_confi
         
         with col1:
             if st.button("📦 개별 파일 전체 다운로드 (ZIP)", use_container_width=True):
-                zip_data = exporter.create_individual_zip(category_code, story_no, st.session_state.parsed_data, st.session_state.audio_cache)
+                zip_data = exporter.create_individual_zip(difficulty_suffix, st.session_state.parsed_data, st.session_state.audio_cache)
                 st.download_button(
                     label="ZIP 다운로드",
                     data=zip_data,
-                    file_name=f"{category_code}_{story_no}_individual_files.zip",
+                    file_name=f"{difficulty_suffix}_individual_files.zip",
                     mime="application/zip",
                     use_container_width=True
                 )
@@ -737,11 +769,13 @@ if st.session_state.get('parsed_data') and st.session_state.get('character_confi
                             added_line_keys.add(line_key)
                     
                     merged_cache = {s: audio_engine.merge_audio(al) for s, al in scene_groups.items() if al}
-                    zip_data_merged = exporter.create_merged_zip(category_code, story_no, merged_cache)
+                    # 첫 번째 아이템의 book_id를 가져옴
+                    first_book_id = st.session_state.parsed_data[0].get('book_id', '') if st.session_state.parsed_data else ""
+                    zip_data_merged = exporter.create_merged_zip(difficulty_suffix, merged_cache, book_id=first_book_id)
                     st.download_button(
                         label="병합본 ZIP 다운로드",
                         data=zip_data_merged,
-                        file_name=f"{category_code}_{story_no}_merged_scenes.zip",
+                        file_name=f"{difficulty_suffix}_merged_scenes.zip",
                         mime="application/zip",
                         use_container_width=True
                     )

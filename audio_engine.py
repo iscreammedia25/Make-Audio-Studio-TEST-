@@ -39,7 +39,7 @@ def get_voices(api_key):
     except Exception as e:
         return {"error": f"예상치 못한 오류: {str(e)}"}
 
-def generate_audio(api_key, text, voice_id, stability=0.5, similarity_boost=0.75):
+def generate_audio(api_key, text, voice_id, stability=0.5, similarity_boost=0.75, style=0.0, use_speaker_boost=True):
     """ElevenLabs API를 사용하여 텍스트로부터 음성(WAV)을 생성합니다."""
     api_key = api_key.strip()
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream"
@@ -54,7 +54,9 @@ def generate_audio(api_key, text, voice_id, stability=0.5, similarity_boost=0.75
         "model_id": "eleven_multilingual_v2",
         "voice_settings": {
             "stability": stability,
-            "similarity_boost": similarity_boost
+            "similarity_boost": similarity_boost,
+            "style": style,
+            "use_speaker_boost": use_speaker_boost
         }
     }
     try:

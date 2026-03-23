@@ -42,9 +42,10 @@ def resolve_pronoun(pronoun, text_up_to_here, characters_list):
                 
     return None
 
-def parse_dataframe(df, confirmed_characters_list=None):
+def parse_dataframe(df, confirmed_characters_list=None, ai_metadata=None):
     """
     구조화된 시트(CSV/Excel)의 각 행을 처리합니다.
+    ai_metadata: Gemini가 분석한 [{"text": "...", "speaker": "...", "mood": "..."}] 리스트
     """
     parsed_data = []
     global_last_speaker = "캐릭터"
@@ -54,77 +55,116 @@ def parse_dataframe(df, confirmed_characters_list=None):
     
     accumulated_text = ""
 
+    # AI 메타데이터를 텍스트 기반으로 검색하기 위한 딕셔너리 구성 (정밀도 향상)
+    ai_lookup = {}
+    if ai_metadata and isinstance(ai_metadata, list):
+        for item in ai_metadata:
+            if isinstance(item, dict) and 'text' in item:
+                ai_lookup[str(item['text']).strip()] = item
+
     for idx, row in df.iterrows():
         row_id = str(row.get('ID', f"ROW{idx}"))
         row_key = str(row.get('Key', f"KEY{idx}"))
         text = str(row.get('Text', ''))
         
-        if not text.strip():
-            continue
-            
+        if not text.strip(): continue
         text = text.replace('“', '"').replace('”', '"').replace('‘', "'").replace('’', "'")
-        text = text.replace('—', '-').replace('–', '-')
-
         accumulated_text += " " + text
         
-        # 여기서 통문장 text 하나에 대해 대사/내레이션 분리 (기존 로직 유지)
         segments = re.split(r'("[^"\n]*"|\'[^\'\n]*\')', text)
         temp_segs = []
-        line_speaker = None
         
         for seg in segments:
             if not seg or not seg.strip(): continue
+            is_dialogue = (seg.startswith('"') and seg.endswith('"')) or (seg.startswith("'") and seg.endswith("'"))
+            seg_text = seg[1:-1].strip() if is_dialogue else seg.strip()
             
-            if (seg.startswith('"') and seg.endswith('"')) or (seg.startswith("'") and seg.endswith("'")):
-                # 대사 세그먼트
-                dialogue_text = seg[1:-1].strip()
-                temp_segs.append({'type': '대사', 'text': dialogue_text})
-            else:
-                # 내레이션 세그먼트 -> 화자 추출 시도
-                narration = seg.strip()
-                
-                # AI 추출 이름 우선 매칭 정규식
+            # AI 메타데이터 우선 검색
+            ai_item = ai_lookup.get(seg_text)
+            if not ai_item: # 전체 문자열 포함 여부로 한 번 더 검색
+                ai_item = next((v for k, v in ai_lookup.items() if (seg_text in k or k in seg_text)), None)
+            
+            # 추출된 speaker가 딕셔너리일 경우를 대비해 문자열로 변환
+            speaker = ai_item.get('speaker', None) if ai_item else None
+            if isinstance(speaker, dict):
+                speaker = speaker.get('name', str(speaker))
+            if speaker: speaker = str(speaker).strip()
+            
+            mood = ai_item.get('mood', 'Neutral') if ai_item else 'Neutral'
+            if isinstance(mood, dict): # 혹시 무드도 딕셔너리로 온다면
+                mood = mood.get('type', 'Neutral')
+            mood = str(mood).strip()
+            
+            if not speaker:
+                # Fallback: Regex 기반 추출
                 if confirmed_characters_list:
-                    char_names_regex = r'(' + '|'.join(re.escape(c) for c in confirmed_characters_list.keys()) + r')'
-                    noun_phrase = rf'(?:(?:the|a|an|his|her|their)\s+)?{char_names_regex}'
+                    char_regex = r'(' + '|'.join(re.escape(c) for c in confirmed_characters_list.keys()) + r')'
+                    np = rf'(?:(?:the|a|an|his|her|their)\s+)?{char_regex}'
                 else:
-                    noun_phrase = rf'(?:(?:the|a|an|his|her|their)\s+)?([A-Z][a-z]+)'
+                    np = r'(?:(?:the|a|an|his|her|their)\s+)?([A-Z][a-z]+)'
                 
-                # 규칙 1: 직접 매칭
-                speaker_match = re.search(rf'\b{verbs_regex}\b\s+{noun_phrase}|{noun_phrase}\s+\b{verbs_regex}\b', narration, re.IGNORECASE)
-                
-                if speaker_match:
-                    found = next((g for g in speaker_match.groups() if g is not None), None)
-                    if found: line_speaker = found
-                
-                # 규칙 2: 대명사 해결 -> 위에서 못 찾았을 때만
-                if not line_speaker:
-                    pronoun_match = re.search(rf'\b(he|she|they|it)\b\s+{verbs_regex}|{verbs_regex}\s+\b(he|she|they|it)\b', narration, re.IGNORECASE)
-                    if pronoun_match:
-                        pronoun = pronoun_match.group(1) or pronoun_match.group(2)
-                        text_up_to_here = accumulated_text[:accumulated_text.find(narration)]
-                        resolved = resolve_pronoun(pronoun, text_up_to_here, confirmed_characters_list)
-                        if resolved: line_speaker = resolved
+                match = re.search(rf'\b{verbs_regex}\b\s+{np}|{np}\s+\b{verbs_regex}\b', seg_text, re.IGNORECASE)
+                speaker = next((g for g in match.groups() if g is not None), None) if match else None
 
-                temp_segs.append({'type': '내레이션', 'text': narration})
-
-        # 규칙 3: 상태 유지
-        final_speaker = line_speaker or global_last_speaker
-        global_last_speaker = final_speaker
-        
-        for seg_idx, seg in enumerate(temp_segs):
-            char_label = final_speaker if seg['type'] == '대사' else '내레이션'
-            parsed_data.append({
-                'ID': row_id,
-                'Key': row_key,
-                'seg_idx': seg_idx,
-                'segment_id': f"{row_key}_{seg_idx}",
-                'type': seg['type'],
-                'character': char_label,
-                'text': seg['text'],
-                'scene': row_key, # app.py 표시 용 (Key)
-                'line': row_id    # app.py 표시 용 (ID)
+            temp_segs.append({
+                'type': '대사' if is_dialogue else '내레이션', 
+                'text': seg_text,
+                'speaker': speaker,
+                'mood': mood
             })
+
+        # Key 파싱 (형식: N_SC01_ST01 등) - SC(장면)와 ST(순서) 접두어를 지능적으로 분류
+        key_parts = [p.strip() for p in row_key.split('_') if p.strip()]
+        
+        # 1. 구성 요소 후보 식별
+        sc_candidates = [p for p in key_parts if p.upper().startswith("SC")]
+        st_candidates = [p for p in key_parts if p.upper().startswith("ST")]
+        type_candidates = [p for p in key_parts if p.upper() in ["N", "E", "D"]]
+        
+        # 이미 식별된 요소를 제외한 나머지 (순서 기반 할당용)
+        identified = set(sc_candidates + st_candidates + type_candidates)
+        remaining = [p for p in key_parts if p not in identified]
+        
+        # 2. 최종 할당 (접두어 우선 -> 남은 것 순서대로)
+        # 장면(Scene) 결정
+        if sc_candidates:
+            scene_num = sc_candidates[0]
+        elif remaining:
+            scene_num = remaining.pop(0)
+        else:
+            scene_num = "SC01"
+            
+        # 순서(Sequence) 결정
+        if st_candidates:
+            seq_num = st_candidates[0]
+        elif remaining:
+            seq_num = remaining.pop(0)
+        else:
+            seq_num = "ST01"
+            
+        # 타입(Audio Type) 결정
+        if type_candidates:
+            audio_type = type_candidates[0]
+        else:
+            audio_type = "N"
+
+        for seg_idx, seg in enumerate(temp_segs):
+            line_speaker = str(seg['speaker'] or global_last_speaker)
+            if seg['type'] == '대사':
+                global_last_speaker = line_speaker
+                char_label = line_speaker
+            else:
+                char_label = "내레이션"
+            
+            parsed_data.append({
+                'ID': row_id, 'Key': row_key, 'book_id': row_id,
+                'audio_type': audio_type, 'scene_num': scene_num, 'seq_num': seq_num,
+                'seg_idx': seg_idx, 'segment_id': f"{row_key}_{seg_idx}",
+                'type': seg['type'], 'character': char_label, 'text': seg['text'], 'mood': seg['mood'],
+                'scene': f"{audio_type}_{scene_num}", 'line': seq_num
+            })
+                    
+    return parsed_data, df
                     
     return parsed_data, df
 
