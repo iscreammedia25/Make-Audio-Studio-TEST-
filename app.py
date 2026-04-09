@@ -544,8 +544,8 @@ if st.session_state.get('parsed_data') and st.session_state.get('character_confi
                 new_id = str(uuid.uuid4())[:8]
                 new_item = {
                     'scene': item['scene'],
-                    'line': f"{item['line']}_new",
-                    'type': '대사', # 기본적으로 대사로 세팅
+                    'line': item['line'], # 기존 ST 번호 그대로 유지
+                    'type': '대사',
                     'character': item['character'],
                     'text': '',
                     'segment_id': new_id
@@ -744,38 +744,41 @@ if st.session_state.get('parsed_data') and st.session_state.get('character_confi
         col1, col2 = st.columns(2)
         
         with col1:
-            if st.button("📦 개별 파일 전체 다운로드 (ZIP)", use_container_width=True):
-                zip_data = exporter.create_individual_zip(difficulty_suffix, st.session_state.parsed_data, st.session_state.audio_cache)
+            # 개별 파일 다운로드
+            zip_data = exporter.create_individual_zip(difficulty_suffix, st.session_state.parsed_data, st.session_state.audio_cache)
+            if zip_data:
                 st.download_button(
-                    label="ZIP 다운로드",
+                    label="📦 개별 파일 전체 다운로드 (ZIP)",
                     data=zip_data,
                     file_name=f"{difficulty_suffix}_individual_files.zip",
-                    mime="application/zip",
-                    use_container_width=True
+                    mime="application/octet-stream",
+                    use_container_width=True,
+                    key="btn_download_individual"
                 )
         
         with col2:
-            if st.button("🎞️ 씬별 병합 파일 다운로드 (ZIP)", use_container_width=True):
-                with st.spinner("씬별 병합 중..."):
-                    scene_groups = {}
-                    added_line_keys = set()
-                    for item in st.session_state.parsed_data:
-                        scene = item['scene']
-                        line_key = f"{scene}_{item['line']}"
-                        if line_key in added_line_keys: continue
-                        if scene not in scene_groups: scene_groups[scene] = []
-                        if line_key in st.session_state.audio_cache:
-                            scene_groups[scene].append(st.session_state.audio_cache[line_key])
-                            added_line_keys.add(line_key)
-                    
-                    merged_cache = {s: audio_engine.merge_audio(al) for s, al in scene_groups.items() if al}
-                    # 첫 번째 아이템의 book_id를 가져옴
-                    first_book_id = st.session_state.parsed_data[0].get('book_id', '') if st.session_state.parsed_data else ""
-                    zip_data_merged = exporter.create_merged_zip(difficulty_suffix, merged_cache, book_id=first_book_id)
-                    st.download_button(
-                        label="병합본 ZIP 다운로드",
-                        data=zip_data_merged,
-                        file_name=f"{difficulty_suffix}_merged_scenes.zip",
-                        mime="application/zip",
-                        use_container_width=True
-                    )
+            # 씬별 병합 다운로드
+            scene_groups = {}
+            added_line_keys = set()
+            for item in st.session_state.parsed_data:
+                scene = item['scene']
+                line_key = f"{scene}_{item['line']}"
+                if line_key in added_line_keys: continue
+                if scene not in scene_groups: scene_groups[scene] = []
+                if line_key in st.session_state.audio_cache:
+                    scene_groups[scene].append(st.session_state.audio_cache[line_key])
+                    added_line_keys.add(line_key)
+            
+            if scene_groups:
+                merged_cache = {s: audio_engine.merge_audio(al) for s, al in scene_groups.items() if al}
+                first_book_id = st.session_state.parsed_data[0].get('book_id', '') if st.session_state.parsed_data else ""
+                zip_data_merged = exporter.create_merged_zip(difficulty_suffix, merged_cache, book_id=first_book_id)
+                
+                st.download_button(
+                    label="🎞️ 씬별 병합 파일 다운로드 (ZIP)",
+                    data=zip_data_merged,
+                    file_name=f"{difficulty_suffix}_merged_scenes.zip",
+                    mime="application/octet-stream",
+                    use_container_width=True,
+                    key="btn_download_merged"
+                )

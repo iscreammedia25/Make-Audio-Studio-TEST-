@@ -8,7 +8,7 @@ def create_individual_zip(difficulty_suffix, parsed_data, audio_cache):
     """
     buffer = io.BytesIO()
     added_keys = set()
-    with zipfile.ZipFile(buffer, 'w') as zf:
+    with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
         for line in parsed_data:
             key = f"{line['scene']}_{line['line']}"
             if key in audio_cache and key not in added_keys:
@@ -26,7 +26,7 @@ def create_merged_zip(difficulty_suffix, merged_audio_cache, book_id=""):
     규칙: {BookID}_{scene_num}_{difficulty_suffix}.mp3 (예: OG0001_SC01_NA.mp3)
     """
     buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, 'w') as zf:
+    with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
         for scene_tag, audio_bytes in merged_audio_cache.items():
             # scene_tag는 N_SC01 형태 -> 여기서 scene_num만 추출 (SC01)
             parts = scene_tag.split('_')
