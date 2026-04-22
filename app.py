@@ -153,29 +153,38 @@ with st.sidebar:
                     from google import genai
                     client = genai.Client(api_key=clean_gemini_key)
                     models = list(client.models.list())
-                    model_names = [m.name for m in models]
+                    # SDK 버전에 따라 속성명이 다를 수 있으므로 안전하게 필터링
+                    model_names = []
+                    for m in models:
+                        methods = getattr(m, 'supported_methods', getattr(m, 'supported_generation_methods', []))
+                        if not methods or "generateContent" in str(methods):
+                            model_names.append(m.name)
                     
                     # 지능형 모델 선택: 해당 키가 지원하는 가장 좋은 모델 찾기
                     preferred_models = [
-                        "models/gemini-2.0-flash", 
                         "models/gemini-1.5-flash", 
                         "models/gemini-1.5-pro",
-                        "models/gemini-1.5-flash-8b"
+                        "models/gemini-2.0-flash-exp",
+                        "models/gemini-1.0-pro"
                     ]
                     
                     best_model = None
                     for pm in preferred_models:
-                        if any(pm in name for name in model_names):
+                        if any(pm == name for name in model_names):
                             best_model = pm
                             break
+                    
+                    if not best_model and model_names:
+                        # 선호 목록에 없으면 사용 가능한 모델 중 첫 번째 선택
+                        best_model = model_names[0]
                     
                     if best_model:
                         st.session_state.gemini_model = best_model
                         st.success(f"✅ Gemini 인증 성공! 현재 키에 최적화된 모델({best_model})이 설정되었습니다.")
                     else:
-                        # 폴백: 리스트의 첫 번째 모델 사용
-                        st.session_state.gemini_model = model_names[0] if model_names else "models/gemini-1.5-flash"
-                        st.warning(f"⚠️ 권장 모델을 찾지 못해 목록의 첫 번째 추출된 모델({st.session_state.gemini_model})을 사용합니다.")
+                        # 폴백: 직접 지정
+                        st.session_state.gemini_model = "models/gemini-1.5-flash"
+                        st.warning(f"⚠️ 사용 가능한 모델을 찾지 못해 기본 모델({st.session_state.gemini_model})을 설정합니다.")
                 except Exception as e:
                     st.error(f"❌ Gemini 연결 테스트 실패: {str(e)}")
                     st.info("API 키가 정확한지, 혹은 할당량(limit)이 0이 아닌지 확인해 주세요.")
@@ -308,7 +317,7 @@ if st.button("AI 분석하기 (대본 매칭)"):
             script_text = "\n".join(df['Text'].dropna().astype(str).tolist())
             
             # 1단계: Gemini를 통한 대본 메타데이터 추출 (캐릭터 + 세그먼트 감정)
-            best_model = st.session_state.get('gemini_model', 'gemini-1.5-flash')
+            best_model = st.session_state.get('gemini_model', 'models/gemini-1.5-flash')
             res = llm_helper.extract_script_metadata_via_gemini(st.session_state.gemini_api_key, script_text, model_name=best_model)
             if not res['success']:
                 st.error(res['error'])

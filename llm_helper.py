@@ -2,7 +2,7 @@ from google import genai
 import json
 import re
 
-def extract_script_metadata_via_gemini(api_key, script_text, model_name='gemini-1.5-flash'):
+def extract_script_metadata_via_gemini(api_key, script_text, model_name='models/gemini-1.5-flash'):
     """
     Gemini API를 사용하여 대본 전체를 분석하고, 캐릭터 목록과 각 대사별 감정(Mood)을 추출합니다.
     """
