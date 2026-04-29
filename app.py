@@ -29,14 +29,16 @@ if 'gemini_api_key' not in st.session_state:
     st.session_state.gemini_api_key = ""
 if 'voices' not in st.session_state:
     st.session_state.voices = {}
-if 'parsed_data' not in st.session_state:
-    st.session_state.parsed_data = []
-if 'voice_mappings' not in st.session_state:
-    st.session_state.voice_mappings = {}
-if 'audio_cache' not in st.session_state:
-    st.session_state.audio_cache = {}
-if 'merged_audio_cache' not in st.session_state:
-    st.session_state.merged_audio_cache = {}
+
+# 난이도별 데이터 관리 (Normal, Easy, Difficult)
+DIFFICULTIES = ["Normal", "Easy", "Difficult"]
+if 'parsed_data_dict' not in st.session_state:
+    st.session_state.parsed_data_dict = {d: [] for d in DIFFICULTIES}
+if 'voice_mappings_dict' not in st.session_state:
+    st.session_state.voice_mappings_dict = {d: {} for d in DIFFICULTIES}
+if 'audio_cache_dict' not in st.session_state:
+    st.session_state.audio_cache_dict = {d: {} for d in DIFFICULTIES}
+
 if 'characters' not in st.session_state:
     st.session_state.characters = {}
 if 'character_voice_mappings' not in st.session_state:
@@ -47,15 +49,17 @@ if 'cloned_voice_id' not in st.session_state:
     st.session_state.cloned_voice_id = None
 if 'cloned_voice_bytes' not in st.session_state:
     st.session_state.cloned_voice_bytes = None
-if 'last_uploaded_file_name' not in st.session_state:
-    st.session_state.last_uploaded_file_name = None
+if 'last_uploaded_files' not in st.session_state:
+    st.session_state.last_uploaded_files = []
+if 'script_parsed_dict' not in st.session_state:
+    st.session_state.script_parsed_dict = {d: False for d in DIFFICULTIES}
 
 # 전체 리셋 함수
 def reset_all_state():
-    st.session_state.script_parsed = False
-    st.session_state.parsed_data = []
-    st.session_state.audio_cache = {}
-    st.session_state.voice_mappings = {}
+    st.session_state.script_parsed_dict = {d: False for d in DIFFICULTIES}
+    st.session_state.parsed_data_dict = {d: [] for d in DIFFICULTIES}
+    st.session_state.audio_cache_dict = {d: {} for d in DIFFICULTIES}
+    st.session_state.voice_mappings_dict = {d: {} for d in DIFFICULTIES}
     st.session_state.characters = {}
     st.session_state.character_voice_mappings = {}
     st.session_state.character_confirmed = False
@@ -192,8 +196,9 @@ with st.sidebar:
             st.warning("Gemini API Key를 입력해 주세요.")
 
     st.divider()
-    difficulty = st.radio("난이도 구분", ["Normal", "Easy", "Difficult"])
-    difficulty_suffix = {"Normal": "N_A", "Easy": "E_A", "Difficult": "D_A"}.get(difficulty, "N_A")
+    # 사이드바의 난이도는 "현재 뷰어에서 볼 난이도"를 결정함
+    current_view_diff = st.radio("표시할 난이도 선택", DIFFICULTIES)
+    difficulty_suffix = {"Normal": "N_A", "Easy": "E_A", "Difficult": "D_A"}.get(current_view_diff, "N_A")
     story_no = "" # UI에서 제거됨
 
 st.title("🎙️ 동화 대본 자동 더빙 및 편집 에이전트")
@@ -203,12 +208,6 @@ st.header("Step 1: 캐릭터 목소리 복제하기 (에셋 생성)")
 with st.container(border=True):
     uploaded_file = st.file_uploader("캐릭터 인사 영상(mp4) 또는 음성(mp3, wav) 업로드", type=['mp4', 'mp3', 'wav'], key="voice_uploader")
     
-    # 새로운 파일 업로드 시 리셋 트리거
-    if uploaded_file is not None and uploaded_file.name != st.session_state.last_uploaded_file_name:
-        reset_all_state()
-        st.session_state.last_uploaded_file_name = uploaded_file.name
-        st.rerun()
-
     if uploaded_file:
         col1, col2 = st.columns([2, 1])
         with col1:
@@ -287,73 +286,90 @@ with st.container(border=True):
 st.divider()
 st.header("Step 2: 대본 파일 업로드 및 AI 분석")
 import pandas as pd
-script_file = st.file_uploader("대본 파일 업로드 (CSV 또는 Excel)", type=['csv', 'xlsx', 'xls'], key="script_uploader")
+uploaded_scripts = st.file_uploader("대본 파일 업로드 (CSV 또는 Excel) - 최대 3개", type=['csv', 'xlsx', 'xls'], key="script_uploader", accept_multiple_files=True)
 
-if 'script_parsed' not in st.session_state:
-    st.session_state.script_parsed = False
-
-if st.button("AI 분석하기 (대본 매칭)"):
-    if not script_file:
-        st.warning("대본 파일을 업로드해 주세요 (CSV/Excel).")
-    elif not st.session_state.get('gemini_api_key'):
-        st.error("좌측 사이드바에서 Gemini API Key를 입력해 주세요.")
-    else:
-        with st.spinner(f"Gemini AI({st.session_state.get('gemini_model', 'default')})가 대본을 분석 중입니다..."):
-            try:
-                if script_file.name.endswith('.csv'):
-                    df = pd.read_csv(script_file)
-                else:
-                    df = pd.read_excel(script_file)
-            except Exception as e:
-                st.error(f"파일 읽기 오류: {e}")
-                st.stop()
-                
-            required_cols = ['ID', 'Key', 'Text']
-            missing = [c for c in required_cols if c not in df.columns]
-            if missing:
-                st.error(f"업로드된 파일에 다음 필수 컬럼이 없습니다: {', '.join(missing)}")
-                st.stop()
-                
-            script_text = "\n".join(df['Text'].dropna().astype(str).tolist())
+if uploaded_scripts:
+    # 파일명 기반 자동 매핑 및 수동 조정 UI
+    st.subheader("파일별 난이도 매핑")
+    file_mapping = {}
+    
+    cols = st.columns(len(uploaded_scripts))
+    for idx, f in enumerate(uploaded_scripts):
+        with cols[idx]:
+            st.write(f"📄 {f.name}")
+            # 파일명에 힌트가 있으면 자동 선택
+            default_idx = 0
+            fname_lower = f.name.lower()
+            if "easy" in fname_lower or "쉬움" in fname_lower: default_idx = 1
+            elif "diff" in fname_lower or "hard" in fname_lower or "어려움" in fname_lower: default_idx = 2
             
-            # 1단계: Gemini를 통한 대본 메타데이터 추출 (캐릭터 + 세그먼트 감정)
-            best_model = st.session_state.get('gemini_model', 'models/gemini-1.5-flash')
-            res = llm_helper.extract_script_metadata_via_gemini(st.session_state.gemini_api_key, script_text, model_name=best_model)
-            if not res['success']:
-                st.error(res['error'])
-            else:
-                st.session_state.llm_characters = res['characters']
-                st.session_state.segments_metadata = res['segments_metadata']
-                st.success("캐릭터 및 감정 분석 완료! 대본 매칭을 진행합니다...")
-                
-                # 2단계: 실제 대본 파싱 (확정된 캐릭터 리스트 및 AI 분석 데이터 주입)
-                parsed, df_parsed = processor.parse_dataframe(df, st.session_state.llm_characters, ai_metadata=st.session_state.segments_metadata)
-                if not parsed:
-                    st.error("대본 텍스트 파싱 결과가 없습니다.")
-                else:
-                    st.session_state.parsed_data = parsed
-                    st.session_state.characters = st.session_state.llm_characters.copy()
-                    # 세그먼트 매칭 초기화
-                    st.session_state.voice_mappings = {item['segment_id']: "" for item in parsed}
+            selected_diff = st.selectbox(f"난이도 선택 ({idx})", DIFFICULTIES, index=default_idx, key=f"diff_map_{idx}", label_visibility="collapsed")
+            file_mapping[selected_diff] = f
+
+    if st.button("✨ 모든 대본 AI 분석하기"):
+        if not file_mapping:
+            st.warning("분석할 파일이 없습니다.")
+        elif not st.session_state.get('gemini_api_key'):
+            st.error("좌측 사이드바에서 Gemini API Key를 입력해 주세요.")
+        else:
+            all_characters = set()
+            with st.spinner(f"Gemini AI가 모든 난이도 대본을 분석 중입니다..."):
+                try:
+                    for diff, f in file_mapping.items():
+                        if f.name.endswith('.csv'):
+                            df = pd.read_csv(f)
+                        else:
+                            df = pd.read_excel(f)
+                            
+                        required_cols = ['ID', 'Key', 'Text']
+                        missing = [c for c in required_cols if c not in df.columns]
+                        if missing:
+                            st.error(f"'{f.name}' 파일에 필수 컬럼이 없습니다: {', '.join(missing)}")
+                            continue
+                            
+                        script_text = "\n".join(df['Text'].dropna().astype(str).tolist())
+                        
+                        # AI 분석
+                        best_model = st.session_state.get('gemini_model', 'models/gemini-1.5-flash')
+                        res = llm_helper.extract_script_metadata_via_gemini(st.session_state.gemini_api_key, script_text, model_name=best_model)
+                        
+                        if res['success']:
+                            # 캐릭터 목록 합치기
+                            for c in res['characters']:
+                                all_characters.add(c)
+                            
+                            # 대본 파싱
+                            parsed, _ = processor.parse_dataframe(df, res['characters'], ai_metadata=res['segments_metadata'])
+                            
+                            # 난이도별 저장
+                            st.session_state.parsed_data_dict[diff] = parsed
+                            st.session_state.voice_mappings_dict[diff] = {item['segment_id']: "" for item in parsed}
+                            st.session_state.script_parsed_dict[diff] = True
+                            
+                    # 통합 캐릭터 리스트 업데이트
+                    st.session_state.characters = {c: {"gender": "중성", "age": "성인", "tone": "보통"} for c in all_characters}
                     st.session_state.character_voice_mappings = {name: "" for name in st.session_state.characters}
                     
-                    # 복제된 보이스 자동 매칭
+                    # 복제된 보이스가 있다면 자동 매칭
                     if st.session_state.get('cloned_char_name') and st.session_state.get('cloned_voice_id'):
                         c_name = st.session_state.cloned_char_name
                         v_id = st.session_state.cloned_voice_id
                         if c_name in st.session_state.character_voice_mappings:
                             st.session_state.character_voice_mappings[c_name] = v_id
-                            # 개별 세그먼트에도 적용
-                            for item in st.session_state.parsed_data:
-                                if item.get('character') == c_name:
-                                    st.session_state.voice_mappings[item['segment_id']] = v_id
+                            # 모든 난이도의 개별 세그먼트에도 적용
+                            for d in DIFFICULTIES:
+                                for item in st.session_state.parsed_data_dict[d]:
+                                    if item.get('character') == c_name:
+                                        st.session_state.voice_mappings_dict[d][item['segment_id']] = v_id
 
-                    st.session_state.script_parsed = True
                     st.session_state.character_confirmed = False
+                    st.success("✅ 모든 난이도 대본 분석 및 캐릭터 통합 완료!")
                     st.rerun()
+                except Exception as e:
+                    st.error(f"처리 중 오류 발생: {str(e)}")
 
 # 2. 보이스 설정 (내레이션 + 캐릭터 통합)
-if st.session_state.get('script_parsed') and st.session_state.parsed_data:
+if any(st.session_state.script_parsed_dict.values()):
         st.divider()
         st.header("2. 보이스 설정")
         
@@ -374,10 +390,11 @@ if st.session_state.get('script_parsed') and st.session_state.parsed_data:
             with n_col2:
                 if st.button("내레이션 일괄 적용", use_container_width=True):
                     if st.session_state.all_narration_voice_id:
-                        for item in st.session_state.parsed_data:
-                            if item['type'] == '내레이션':
-                                st.session_state.voice_mappings[item['segment_id']] = st.session_state.all_narration_voice_id
-                        st.success("내레이션 보이스가 일괄 적용되었습니다.")
+                        for d in DIFFICULTIES:
+                            for item in st.session_state.parsed_data_dict[d]:
+                                if item['type'] == '내레이션':
+                                    st.session_state.voice_mappings_dict[d][item['segment_id']] = st.session_state.all_narration_voice_id
+                        st.success("모든 난이도에 내레이션 보이스가 일괄 적용되었습니다.")
                         st.rerun()
 
         st.write("---")
@@ -413,24 +430,27 @@ if st.session_state.get('script_parsed') and st.session_state.parsed_data:
                         chosen_v = voice_selector_ui("보이스", current_v, st.session_state.voices, f"v_char_{new_name}")
                         if chosen_v != current_v:
                             st.session_state.character_voice_mappings[new_name] = chosen_v
-                            for item in st.session_state.parsed_data:
-                                if item.get('character') == new_name:
-                                    st.session_state.voice_mappings[item['segment_id']] = chosen_v
+                            for d in DIFFICULTIES:
+                                for item in st.session_state.parsed_data_dict[d]:
+                                    if item.get('character') == new_name:
+                                        st.session_state.voice_mappings_dict[d][item['segment_id']] = chosen_v
                             st.rerun()
                         
                         if st.button("적용", key=f"apply_{new_name}", use_container_width=True):
                             if chosen_v:
-                                for item in st.session_state.parsed_data:
-                                    if item.get('character') == new_name:
-                                        st.session_state.voice_mappings[item['segment_id']] = chosen_v
+                                for d in DIFFICULTIES:
+                                    for item in st.session_state.parsed_data_dict[d]:
+                                        if item.get('character') == new_name:
+                                            st.session_state.voice_mappings_dict[d][item['segment_id']] = chosen_v
                                 st.rerun()
                     
                     if st.button("삭제", key=f"del_{new_name}", type="secondary", use_container_width=True):
                         st.session_state.characters.pop(new_name)
                         st.session_state.character_voice_mappings.pop(new_name, None)
-                        for item in st.session_state.parsed_data:
-                            if item['character'] == new_name:
-                                item['character'] = "내레이션"
+                        for d in DIFFICULTIES:
+                            for item in st.session_state.parsed_data_dict[d]:
+                                if item['character'] == new_name:
+                                    item['character'] = "내레이션"
                         st.rerun()
 
         # 수동 추가 카드
@@ -456,9 +476,9 @@ if st.session_state.get('script_parsed') and st.session_state.parsed_data:
                 st.rerun()
 
 # 3. 세그먼트 상세 설정 및 편집 (보이스 확정 후 노출)
-if st.session_state.get('parsed_data') and st.session_state.get('character_confirmed'):
+if st.session_state.parsed_data_dict[current_view_diff] and st.session_state.get('character_confirmed'):
     st.write("---")
-    st.header("3. 세그먼트 상세 설정 및 편집")
+    st.header(f"3. 세그먼트 상세 설정 및 편집 ({current_view_diff})")
     h_cols = st.columns([0.6, 1.1, 1.5, 4.3, 3.5, 1.0])
     h_cols[0].markdown("**장면**")
     h_cols[1].markdown("**순서**")
@@ -469,7 +489,7 @@ if st.session_state.get('parsed_data') and st.session_state.get('character_confi
     st.write("---")
 
     # 라인별 설정
-    for i, item in enumerate(st.session_state.parsed_data):
+    for i, item in enumerate(st.session_state.parsed_data_dict[current_view_diff]):
         key = item['segment_id']
         cols = st.columns([0.6, 1.1, 1.5, 4.3, 3.5, 1.0])
         
@@ -501,50 +521,38 @@ if st.session_state.get('parsed_data') and st.session_state.get('character_confi
             selected_char = st.selectbox(f"Char_{key}", options=char_options, index=char_options.index(current_char), key=f"char_select_{key}", label_visibility="collapsed")
             
             if selected_char != current_char:
-                st.session_state.parsed_data[i]['character'] = selected_char
+                st.session_state.parsed_data_dict[current_view_diff][i]['character'] = selected_char
                 # 캐릭터가 바뀌면 해당 캐릭터에게 지정된 보이스가 있는지 확인하여 자동 적용
                 if selected_char == "내레이션" and st.session_state.get('all_narration_voice_id'):
-                    st.session_state.voice_mappings[key] = st.session_state.all_narration_voice_id
+                    st.session_state.voice_mappings_dict[current_view_diff][key] = st.session_state.all_narration_voice_id
                 elif selected_char in st.session_state.character_voice_mappings:
                     char_voice = st.session_state.character_voice_mappings[selected_char]
                     if char_voice:
-                        st.session_state.voice_mappings[key] = char_voice
-                
-                # 여기서 extract_characters를 다시 부르면 사용자가 수동으로 수정한 캐릭터 목록이 날아갈 수 있으므로 주의 필요
-                # 하지만 드롭다운 옵션 유지를 위해 필요할 수도 있음. 
-                # 일단은 characters를 직접 관리하므로 parsed_data 기반 자동 추출은 호출하지 않음.
+                        st.session_state.voice_mappings_dict[current_view_diff][key] = char_voice
                 st.rerun()
 
         # 4. 스크립트 수동 수정 (대사의 경우 따옴표 포함)
         with cols[3]:
-            is_dialogue = item['type'] == '대사'
             raw_text = item['text']
-            display_text = f'"{raw_text}"' if is_dialogue and not (raw_text.startswith(('"', "'")) and raw_text.endswith(('"', "'"))) else raw_text
+            # 따옴표 자동 추가/제거 로직 제거 (원본 데이터 유지)
+            new_text = st.text_area(f"Text_{key}", value=raw_text, key=f"text_input_{key}", label_visibility="collapsed", height=68)
             
-            new_text = st.text_area(f"Text_{key}", value=display_text, key=f"text_input_{key}", label_visibility="collapsed", height=68)
-            
-            final_save_text = new_text
-            if is_dialogue:
-                if (final_save_text.startswith('"') and final_save_text.endswith('"')) or \
-                   (final_save_text.startswith("'") and final_save_text.endswith("'")):
-                    final_save_text = final_save_text[1:-1]
-            
-            if final_save_text != item['text']:
-                st.session_state.parsed_data[i]['text'] = final_save_text
+            if new_text != item['text']:
+                st.session_state.parsed_data_dict[current_view_diff][i]['text'] = new_text
         
         # 5. 보이스 설정
-        current_voice_id = st.session_state.voice_mappings.get(key, "")
+        current_voice_id = st.session_state.voice_mappings_dict[current_view_diff].get(key, "")
         with cols[4]:
             if st.session_state.voices:
                 chosen_id = voice_selector_ui(f"{item['type']} {key}", current_voice_id, st.session_state.voices, f"row_{key}")
                 if chosen_id != current_voice_id:
-                    st.session_state.voice_mappings[key] = chosen_id
+                    st.session_state.voice_mappings_dict[current_view_diff][key] = chosen_id
                     st.rerun()
             else:
                 st.write("API Key 필요")
                 
-            if st.session_state.voice_mappings.get(key) == "manual":
-                st.session_state.voice_mappings[key] = st.text_input(f"Voice ID 입력 ({key})", key=f"manual_input_{key}", placeholder="ElevenLabs Voice ID 입력")
+            if st.session_state.voice_mappings_dict[current_view_diff].get(key) == "manual":
+                st.session_state.voice_mappings_dict[current_view_diff][key] = st.text_input(f"Voice ID 입력 ({key})", key=f"manual_input_{key}", placeholder="ElevenLabs Voice ID 입력")
         
         # 6. 추가 (+) 버튼
         with cols[5]:
@@ -559,13 +567,13 @@ if st.session_state.get('parsed_data') and st.session_state.get('character_confi
                     'text': '',
                     'segment_id': new_id
                 }
-                st.session_state.parsed_data.insert(i + 1, new_item)
-                st.session_state.voice_mappings[new_id] = current_voice_id
+                st.session_state.parsed_data_dict[current_view_diff].insert(i + 1, new_item)
+                st.session_state.voice_mappings_dict[current_view_diff][new_id] = current_voice_id
                 st.rerun()
                 
             if st.button("🗑️", key=f"del_row_{key}", help="이 행 삭제"):
-                st.session_state.parsed_data.pop(i)
-                st.session_state.voice_mappings.pop(key, None)
+                st.session_state.parsed_data_dict[current_view_diff].pop(i)
+                st.session_state.voice_mappings_dict[current_view_diff].pop(key, None)
                 st.rerun()
 
     # 속도 조절 세션 초기화
@@ -585,8 +593,8 @@ if st.session_state.get('parsed_data') and st.session_state.get('character_confi
         st.session_state.speed_settings = {k: bulk_speed for k in st.session_state.speed_settings.keys()}
         st.session_state.speed_settings["default"] = bulk_speed
     else:
-        # 대본에서 실제 사용된 캐릭터 이름들 추출 (내레이션 제외)
-        used_chars = sorted(list(set([item['character'] for item in st.session_state.parsed_data if item['character'] != "내레이션"])))
+        # 현재 보고 있는 대본에서 실제 사용된 캐릭터 이름들 추출 (내레이션 제외)
+        used_chars = sorted(list(set([item['character'] for item in st.session_state.parsed_data_dict[current_view_diff] if item['character'] != "내레이션"])))
         
         st.write("각 보이스별 속도를 개별 설정하세요.")
         cols = st.columns(len(used_chars) + 1)
@@ -607,12 +615,12 @@ if st.session_state.get('parsed_data') and st.session_state.get('character_confi
         if st.button("🎧 속도 미리듣기 샘플 생성"):
             if not st.session_state.api_key:
                 st.error("API Key를 먼저 입력해 주세요.")
-            elif not st.session_state.parsed_data:
-                st.warning("대본 분석을 먼저 진행해 주세요.")
+            elif not st.session_state.parsed_data_dict[current_view_diff]:
+                st.warning(f"'{current_view_diff}' 대본 분석을 먼저 진행해 주세요.")
             else:
                 with st.spinner("캐릭터별 실제 대사로 샘플 생성 중..."):
                     # 대상 캐릭터 목록 (내레이션 + 실제 대본의 캐릭터들)
-                    sample_chars = ["내레이션"] + sorted(list(set([item['character'] for item in st.session_state.parsed_data if item['character'] != "내레이션"])))
+                    sample_chars = ["내레이션"] + sorted(list(set([item['character'] for item in st.session_state.parsed_data_dict[current_view_diff] if item['character'] != "내레이션"])))
                     
                     # 결과를 담을 컬럼들
                     cols_pre = st.columns(len(sample_chars))
@@ -622,8 +630,8 @@ if st.session_state.get('parsed_data') and st.session_state.get('character_confi
                         voice_id = st.session_state.get('all_narration_voice_id') if char == "내레이션" else st.session_state.character_voice_mappings.get(char)
                         
                         if voice_id:
-                            # 해당 캐릭터의 첫 번째 대사 찾기
-                            char_line = next((item['text'] for item in st.session_state.parsed_data if item['character'] == char), "설정된 대사가 없습니다.")
+                            # 해당 캐릭터의 첫 번째 대사 찾기 (현재 뷰 기준)
+                            char_line = next((item['text'] for item in st.session_state.parsed_data_dict[current_view_diff] if item['character'] == char), "설정된 대사가 없습니다.")
                             
                             found_any = True
                             sample_audio = audio_engine.generate_audio(st.session_state.api_key, char_line, voice_id)
@@ -646,74 +654,75 @@ if st.session_state.get('parsed_data') and st.session_state.get('character_confi
 
     st.info("💡 팁: 캐릭터의 성격(톤)에 맞춰 목소리의 감정 표현이 자동으로 미세 조정됩니다.")
     
-    if st.button("✨ 전체 음원 생성", use_container_width=True):
+    if st.button("✨ 모든 난이도 음원 일괄 생성", use_container_width=True):
         if not st.session_state.api_key:
             st.error("API Key가 필요합니다.")
         else:
-            progress_bar = st.progress(0)
-            status_text = st.empty()
+            # 분석 완료된 모든 난이도에 대해 루프 실행
+            target_diffs = [d for d in DIFFICULTIES if st.session_state.script_parsed_dict[d]]
             
-            # 문장(Line) 단위로 그룹화하여 세그먼트 생성 및 병합
-            lines_to_process = {}
-            for item in st.session_state.parsed_data:
-                line_key = f"{item['scene']}_{item['line']}"
-                if line_key not in lines_to_process:
-                    lines_to_process[line_key] = []
-                lines_to_process[line_key].append(item)
+            if not target_diffs:
+                st.warning("분석 완료된 대본이 없습니다.")
+            else:
+                progress_bar = st.progress(0)
+                status_text = st.empty()
                 
-            # 캐릭터별 톤(Tone) 정보 매핑 준비
-            mood_map = {c.get('name', ''): c.get('tone', '') for c in st.session_state.get('llm_characters_raw', [])}
-            
-            total_lines = len(lines_to_process)
-            for idx, (line_key, segments) in enumerate(lines_to_process.items()):
-                status_text.text(f"음원 생성 중: {line_key}...")
+                total_target_lines = sum(len(set(f"{item['scene']}_{item['line']}" for item in st.session_state.parsed_data_dict[d])) for d in target_diffs)
+                processed_lines_total = 0
                 
-                segment_audios = []
-                for seg in segments:
-                    voice_id = st.session_state.voice_mappings.get(seg['segment_id'])
+                for d_idx, d in enumerate(target_diffs):
+                    status_text.text(f"[{d}] 난이도 음원 생성 중...")
                     
-                    if voice_id:
-                        # 무드(Mood)에 따른 ElevenLabs 파라미터(Stability, Style 등) 정밀 조절
-                        seg_mood = seg.get('mood', 'Neutral')
-                        preset = MOOD_PRESETS.get(seg_mood, MOOD_PRESETS['Neutral'])
-                        
-                        audio_bytes = audio_engine.generate_audio(
-                            st.session_state.api_key, 
-                            seg['text'], 
-                            voice_id,
-                            stability=preset['stability'],
-                            similarity_boost=preset['similarity_boost'],
-                            style=preset['style']
-                        )
-                        
-                        if isinstance(audio_bytes, bytes):
-                            # 세그먼트 캐릭터/타입에 따른 정밀한 개별 속도 적용
-                            char_name = seg.get('character', '내레이션')
-                            current_speed = st.session_state.speed_settings.get(char_name, 1.0)
+                    # 문장(Line) 단위로 그룹화
+                    lines_to_process = {}
+                    for item in st.session_state.parsed_data_dict[d]:
+                        line_key = f"{item['scene']}_{item['line']}"
+                        if line_key not in lines_to_process:
+                            lines_to_process[line_key] = []
+                        lines_to_process[line_key].append(item)
+                    
+                    for line_key, segments in lines_to_process.items():
+                        segment_audios = []
+                        for seg in segments:
+                            voice_id = st.session_state.voice_mappings_dict[d].get(seg['segment_id'])
                             
-                            if current_speed != 1.0:
-                                audio_bytes = audio_engine.apply_speed_control(audio_bytes, current_speed)
-                            segment_audios.append(audio_bytes)
-                        else: # Handle error case from generate_audio
-                            st.error(f"세그먼트 생성 실패 ({seg['segment_id']}): {audio_bytes['error']}")
+                            if voice_id:
+                                seg_mood = seg.get('mood', 'Neutral')
+                                preset = MOOD_PRESETS.get(seg_mood, MOOD_PRESETS['Neutral'])
+                                
+                                audio_bytes = audio_engine.generate_audio(
+                                    st.session_state.api_key, 
+                                    seg['text'], 
+                                    voice_id,
+                                    stability=preset['stability'],
+                                    similarity_boost=preset['similarity_boost'],
+                                    style=preset['style']
+                                )
+                                
+                                if isinstance(audio_bytes, bytes):
+                                    char_name = seg.get('character', '내레이션')
+                                    current_speed = st.session_state.speed_settings.get(char_name, 1.0)
+                                    if current_speed != 1.0:
+                                        audio_bytes = audio_engine.apply_speed_control(audio_bytes, current_speed)
+                                    segment_audios.append(audio_bytes)
+                        
+                        if segment_audios:
+                            merged_audio = audio_engine.merge_audio(segment_audios)
+                            st.session_state.audio_cache_dict[d][line_key] = merged_audio
+                        
+                        processed_lines_total += 1
+                        progress_bar.progress(processed_lines_total / total_target_lines)
                 
-                if segment_audios:
-                    # 세그먼트들을 하나로 병합하여 라인 캐시에 저장
-                    merged_audio = audio_engine.merge_audio(segment_audios)
-                    st.session_state.audio_cache[line_key] = merged_audio
-                
-                progress_bar.progress((idx + 1) / total_lines)
-            
-            status_text.text("전체 음원 생성 및 병합 완료!")
-            st.balloons()
+                status_text.text("모든 난이도 음원 생성 및 병합 완료!")
+                st.balloons()
 
-    # 오디오 플레이어 시각화 (문장 단위)
-    if st.session_state.audio_cache:
+    # 오디오 플레이어 시각화 (현재 뷰어 난이도 기준)
+    if st.session_state.audio_cache_dict[current_view_diff]:
         current_scene = None
         
         # 문장 단위 표시를 위해 다시 그룹화
         lines_mapping = {}
-        for item in st.session_state.parsed_data:
+        for item in st.session_state.parsed_data_dict[current_view_diff]:
             key = f"{item['scene']}_{item['line']}"
             if key not in lines_mapping:
                 lines_mapping[key] = []
@@ -725,7 +734,7 @@ if st.session_state.get('parsed_data') and st.session_state.get('character_confi
                 current_scene = scene_tag
                 st.subheader(f"🎬 Scene: {current_scene}")
             
-            if line_key in st.session_state.audio_cache:
+            if line_key in st.session_state.audio_cache_dict[current_view_diff]:
                 with st.container(border=True):
                     cols = st.columns([1.5, 5.5, 2, 2])
                     cols[0].write(f"**ID: {segs[0]['line']}**")
@@ -741,7 +750,7 @@ if st.session_state.get('parsed_data') and st.session_state.get('character_confi
                         content_html += f'<span style="color:{color};">[{seg["character"]}]</span> {text_val} '
                     cols[1].markdown(content_html, unsafe_allow_html=True)
                     
-                    cols[2].audio(st.session_state.audio_cache[line_key], format="audio/mp3")
+                    cols[2].audio(st.session_state.audio_cache_dict[current_view_diff][line_key], format="audio/mp3")
                     
                     if cols[3].button("🔄 다시 생성", key=f"regen_{line_key}"):
                         st.info("개별 문장 재생성 기능은 현재 개발 중입니다. 전체 생성을 이용해 주세요.")
@@ -753,41 +762,41 @@ if st.session_state.get('parsed_data') and st.session_state.get('character_confi
         col1, col2 = st.columns(2)
         
         with col1:
-            # 개별 파일 다운로드
-            zip_data = exporter.create_individual_zip(difficulty_suffix, st.session_state.parsed_data, st.session_state.audio_cache)
+            # 개별 파일 다운로드 (현재 뷰 난이도 기준)
+            zip_data = exporter.create_individual_zip(difficulty_suffix, st.session_state.parsed_data_dict[current_view_diff], st.session_state.audio_cache_dict[current_view_diff])
             if zip_data:
                 st.download_button(
-                    label="📦 개별 파일 전체 다운로드 (ZIP)",
+                    label=f"📦 {current_view_diff} 개별 파일 다운로드 (ZIP)",
                     data=zip_data,
                     file_name=f"{difficulty_suffix}_individual_files.zip",
                     mime="application/octet-stream",
                     use_container_width=True,
-                    key="btn_download_individual"
+                    key=f"btn_download_individual_{current_view_diff}"
                 )
         
         with col2:
-            # 씬별 병합 다운로드
+            # 씬별 병합 다운로드 (현재 뷰 난이도 기준)
             scene_groups = {}
             added_line_keys = set()
-            for item in st.session_state.parsed_data:
+            for item in st.session_state.parsed_data_dict[current_view_diff]:
                 scene = item['scene']
                 line_key = f"{scene}_{item['line']}"
                 if line_key in added_line_keys: continue
                 if scene not in scene_groups: scene_groups[scene] = []
-                if line_key in st.session_state.audio_cache:
-                    scene_groups[scene].append(st.session_state.audio_cache[line_key])
+                if line_key in st.session_state.audio_cache_dict[current_view_diff]:
+                    scene_groups[scene].append(st.session_state.audio_cache_dict[current_view_diff][line_key])
                     added_line_keys.add(line_key)
             
             if scene_groups:
                 merged_cache = {s: audio_engine.merge_audio(al) for s, al in scene_groups.items() if al}
-                first_book_id = st.session_state.parsed_data[0].get('book_id', '') if st.session_state.parsed_data else ""
+                first_book_id = st.session_state.parsed_data_dict[current_view_diff][0].get('book_id', '') if st.session_state.parsed_data_dict[current_view_diff] else ""
                 zip_data_merged = exporter.create_merged_zip(difficulty_suffix, merged_cache, book_id=first_book_id)
                 
                 st.download_button(
-                    label="🎞️ 씬별 병합 파일 다운로드 (ZIP)",
+                    label=f"🎞️ {current_view_diff} 씬별 병합 다운로드 (ZIP)",
                     data=zip_data_merged,
                     file_name=f"{difficulty_suffix}_merged_scenes.zip",
                     mime="application/octet-stream",
                     use_container_width=True,
-                    key="btn_download_merged"
+                    key=f"btn_download_merged_{current_view_diff}"
                 )

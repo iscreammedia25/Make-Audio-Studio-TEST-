@@ -70,28 +70,25 @@ def parse_dataframe(df, confirmed_characters_list=None, ai_metadata=None):
         if not text.strip(): continue
         text = text.replace('“', '"').replace('”', '"').replace('‘', "'").replace('’', "'")
         # 세그먼트 분리 (따옴표 기준)
-        # 어포스트로피(Milo's, don't 등)는 살리고, 대사 목적의 따옴표만 분리하도록 정규식 개선
-        # (?<!\w)'|'(?!\w) 패턴을 고려하여 단어 중간의 '는 무시
-        segments = re.finditer(r'("[^"\n]*"|(?<!\w)\'[^\'\n]*\'(?!\w)|(?:[^\'"]|(?<=\w)\'(?=\w))+)', text)
+        # re.split에 괄호를 사용하면 구분자(따옴표 쌍)도 결과에 포함됨
+        text = text.replace('“', '"').replace('”', '"').replace('‘', "'").replace('’', "'")
+        
+        # 큰 따옴표 쌍("...") 또는 작은 따옴표 쌍('...')을 기준으로 분리
+        raw_parts = re.split(r'("[^"]*"|\'[^\']*\')', text)
         temp_segs = []
         
-        for match in segments:
-            seg = match.group(0)
-            if not seg or not seg.strip(): continue
+        for part in raw_parts:
+            if not part or not part.strip(): continue
             
-            is_dialogue = (seg.startswith('"') and seg.endswith('"')) or (seg.startswith("'") and seg.endswith("'"))
-            # 어포스트로피 예외 처리: 만약 따옴표로 시작하더라도 내부에 공백이 없고 매우 짧으면(예: 's) 내레이션으로 간주
-            if is_dialogue and len(seg) <= 3 and "'" in seg:
-                is_dialogue = False
+            seg_text = part.strip()
+            # 대사 여부 판단: 쌍이 맞는 따옴표로 감싸져 있는 경우
+            is_paired = (seg_text.startswith('"') and seg_text.endswith('"')) or (seg_text.startswith("'") and seg_text.endswith("'"))
             
-            seg_text = seg[1:-1].strip() if is_dialogue else seg.strip()
-            if not seg_text: continue
-
-            # AI 메타데이터 우선 검색 (텍스트 조각이 AI 분석 문장의 일부인지 확인)
-            ai_item = ai_lookup.get(seg_text)
+            # AI 메타데이터 검색 (따옴표 제외 텍스트로 비교)
+            search_text = seg_text.strip('"').strip("'").strip()
+            ai_item = ai_lookup.get(search_text)
             if not ai_item:
-                # 더 유연한 검색: 분리된 조각이 AI 분석 결과의 텍스트에 포함되어 있거나 그 반대인 경우
-                ai_item = next((v for k, v in ai_lookup.items() if (seg_text in k or k in seg_text)), None)
+                ai_item = next((v for k, v in ai_lookup.items() if (search_text in k or k in search_text)), None)
             
             speaker = None
             mood = 'Neutral'
@@ -104,20 +101,22 @@ def parse_dataframe(df, confirmed_characters_list=None, ai_metadata=None):
                 if isinstance(mood, dict): mood = mood.get('type', 'Neutral')
                 mood = str(mood).strip()
             
-            if not speaker and is_dialogue:
-                # 대사인데 화자를 못 찾은 경우 Fallback: Regex 기반 추출
+            # AI가 화자를 찾았거나 쌍이 맞는 따옴표인 경우 대사로 간주
+            final_type = '대사' if (is_paired or (speaker and speaker != "내레이션")) else '내레이션'
+
+            if not speaker and final_type == '대사':
+                # Fallback: 화자 추출 시도
                 if confirmed_characters_list:
                     char_regex = r'(' + '|'.join(re.escape(c) for c in confirmed_characters_list.keys()) + r')'
                     np = rf'(?:(?:the|a|an|his|her|their)\s+)?{char_regex}'
                 else:
                     np = r'(?:(?:the|a|an|his|her|their)\s+)?([A-Z][a-z]+)'
                 
-                # 원본 row's text에서 동사-화자 패턴 검색
                 pattern_match = re.search(rf'\b{verbs_regex}\b\s+{np}|{np}\s+\b{verbs_regex}\b', text, re.IGNORECASE)
                 speaker = next((g for g in pattern_match.groups() if g is not None), None) if pattern_match else None
 
             temp_segs.append({
-                'type': '대사' if is_dialogue else '내레이션', 
+                'type': final_type, 
                 'text': seg_text,
                 'speaker': speaker,
                 'mood': mood
@@ -138,12 +137,10 @@ def parse_dataframe(df, confirmed_characters_list=None, ai_metadata=None):
 
         for seg_idx, seg in enumerate(temp_segs):
             if seg['type'] == '대사':
-                # 대사일 경우 AI가 대사 세그먼트에 명시적으로 지정한 화자 사용, 없으면 직전 화자 상속
                 line_speaker = str(seg['speaker'] or global_last_speaker)
                 global_last_speaker = line_speaker
                 char_label = line_speaker
             else:
-                # 내레이션 부분은 무조건 "내레이션"으로 처리
                 char_label = "내레이션"
             
             parsed_data.append({

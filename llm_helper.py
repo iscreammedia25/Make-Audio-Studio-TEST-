@@ -16,19 +16,23 @@ def extract_script_metadata_via_gemini(api_key, script_text, model_name='models/
         prompt = f"""
 당신은 동화 더빙 전문 에디터입니다. 다음 대본을 분석하여 두 가지 정보를 추출해주세요.
 
-1. **캐릭터 목록**: 대사를 하는 모든 캐릭터의 이름, 성별, 나이, 주요 톤. (대명사는 반드시 실제 이름으로 변환)
+**[중요 지침]**
+- **캐릭터 이름은 절대로 번역하지 마세요.** 대본 원문에 적힌 이름(예: Didi, Podo)을 그대로 사용해야 합니다.
+- 대명사(he, she)는 문맥을 파악하여 반드시 실제 캐릭터 이름으로 변환하세요.
+
+1. **캐릭터 목록**: 대사를 하는 모든 캐릭터의 정보.
 2. **세그먼트 분석**: 대본의 각 행(Row)을 분석하되, 한 행에 **대사(따옴표)와 내레이션이 섞여 있다면 반드시 이를 각각 개별 세그먼트로 분리**하세요.
    - 예: '"Me!" he says.' -> 'Me!' (Speaker: Milo), 'he says.' (Speaker: 내레이션)
    - 예: 'The flower says, "My color helps bees."' -> 'The flower says,' (Speaker: 내레이션), 'My color helps bees.' (Speaker: Flower)
-   - Mood 종류: "Neutral" (보통/내레이션), "Happy" (기쁜/활기찬), "Sad" (슬픈/우울한), "Angry" (화난/심각한), "Excited" (신난/놀란), "Whispering" (속삭이는/조심스러운)
+   - Mood 종류: "Neutral", "Happy", "Sad", "Angry", "Excited", "Whispering"
 
 반드시 아래 JSON 형식으로만 응답하세요:
 {{
     "characters": [
-        {{ "name": "캐릭터명", "gender": "남성/여성/중성", "age": "아동/청소년/성인/노인", "tone": "차분한/장난기있는 등" }}
+        {{ "name": "Original Name", "gender": "남성/여성/중성", "age": "아동/청소년/성인/노인", "tone": "차분한/장난기있는 등" }}
     ],
     "segments": [
-        {{ "text": "분리된 문장 조작", "speaker": "화자이름(또는 내레이션)", "mood": "위 Mood 중 하나" }}
+        {{ "text": "Segment text here", "speaker": "Original Name (or 내레이션)", "mood": "One of the above Moods" }}
     ]
 }}
 
