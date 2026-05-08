@@ -1,6 +1,7 @@
 import requests
 import io
 import wave
+import json
 
 def check_api_key(api_key):
     """API 키의 유효성을 테스트합니다. /v1/models는 일반적으로 더 넓은 권한을 가집니다."""
@@ -118,6 +119,72 @@ def isolate_audio(api_key, audio_bytes):
         return {"success": True, "audio_bytes": response.content}
     except requests.exceptions.HTTPError as e:
         return {"success": False, "error": f"HTTP 오류: {e.response.status_code} - {e.response.text}"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+def generate_voice_design_preview(api_key, gender, age, accent, text="The quick brown fox jumps over the lazy dog. This is a longer sample text to meet the minimum requirement of one hundred characters for the ElevenLabs Voice Design API preview generation."):
+    """일레븐랩스 보이스 디자인 API를 사용하여 임시 보이스 샘플을 생성합니다."""
+    api_key = api_key.strip()
+    url = "https://api.elevenlabs.io/v1/text-to-voice/design"
+    headers = {
+        "xi-api-key": api_key,
+        "Content-Type": "application/json"
+    }
+    
+    # 성별, 나이, 억양을 조합하여 20자 이상의 상세 설명문 생성 (422 오류 방지)
+    description = f"A {gender} voice, {age}, with a {accent} accent, speaking clearly for a children's storybook."
+    
+    data = {
+        "voice_description": description,
+        "text": text,
+        "auto_generate_text": False
+    }
+    
+    try:
+        response = requests.post(url, headers=headers, json=data)
+        response.raise_for_status()
+        
+        res_json = response.json()
+        previews = res_json.get("previews", [])
+        
+        if not previews:
+            return {"success": False, "error": "생성된 보이스 샘플이 없습니다."}
+            
+        # 첫 번째 샘플 사용
+        first_sample = previews[0]
+        import base64
+        audio_bytes = base64.b64decode(first_sample["audio_base_64"])
+        gen_voice_id = first_sample["generated_voice_id"]
+        
+        return {
+            "success": True, 
+            "audio_bytes": audio_bytes, 
+            "generated_voice_id": gen_voice_id
+        }
+    except Exception as e:
+        error_msg = str(e)
+        if hasattr(e, 'response') and e.response is not None:
+            error_msg += f" - {e.response.text}"
+        return {"success": False, "error": error_msg}
+
+def create_voice_from_design(api_key, voice_name, generated_voice_id, description="Created via Voice Design"):
+    """디자인된 임시 보이스를 내 계정에 영구 저장합니다."""
+    api_key = api_key.strip()
+    url = "https://api.elevenlabs.io/v1/text-to-voice"
+    headers = {
+        "xi-api-key": api_key,
+        "Content-Type": "application/json"
+    }
+    data = {
+        "voice_name": voice_name,
+        "voice_description": description,
+        "generated_voice_id": generated_voice_id
+    }
+    
+    try:
+        response = requests.post(url, headers=headers, json=data)
+        response.raise_for_status()
+        return {"success": True, "voice_id": response.json().get("voice_id")}
     except Exception as e:
         return {"success": False, "error": str(e)}
 
