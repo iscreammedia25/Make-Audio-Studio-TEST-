@@ -8,6 +8,7 @@ import moviepy as mp
 import tempfile
 import os
 import io
+import traceback
 
 # 감정(Mood)별 ElevenLabs 파라미터 프리셋
 MOOD_PRESETS = {
@@ -369,7 +370,7 @@ if uploaded_scripts:
                                     all_characters_data[c_name] = c_info
                             
                             # 대본 파싱
-                            parsed, _ = processor.parse_dataframe(df, list(res['characters'].keys()), ai_metadata=res['segments_metadata'])
+                            parsed, _ = processor.parse_dataframe(df, res['characters'], ai_metadata=res['segments_metadata'])
                             
                             # 난이도별 저장
                             st.session_state.parsed_data_dict[diff] = parsed
@@ -390,7 +391,17 @@ if uploaded_scripts:
                     else:
                         st.warning("분석에 성공한 파일이 없습니다. 설정을 확인해 주세요.")
                 except Exception as e:
+                    error_trace = traceback.format_exc()
                     st.error(f"처리 중 오류 발생: {str(e)}")
+                    with st.expander("상세 에러 로그 확인"):
+                        st.code(error_trace)
+                        if 'res' in locals():
+                            st.write("Debug - res['characters'] type:", type(res.get('characters')))
+                            st.write("Debug - res['characters'] value:", res.get('characters'))
+                        if 'df' in locals():
+                            st.write("Debug - df type:", type(df))
+                            if hasattr(df, 'columns'):
+                                st.write("Debug - df columns:", list(df.columns))
 
 # 2. 보이스 설정 (내레이션 + 캐릭터 통합)
 if any(st.session_state.script_parsed_dict.values()):

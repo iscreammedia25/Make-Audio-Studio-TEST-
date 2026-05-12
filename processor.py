@@ -17,7 +17,17 @@ def resolve_pronoun(pronoun, text_up_to_here, characters_list):
     
     # AI가 추출한 모든 문자열 (이름들)
     if characters_list:
-        all_names_regex = r'\b(' + '|'.join(re.escape(c) for c in characters_list.keys()) + r')\b'
+        if isinstance(characters_list, dict):
+            char_names = list(characters_list.keys())
+        elif isinstance(characters_list, list):
+            char_names = characters_list
+        else:
+            char_names = []
+        
+        if char_names:
+            all_names_regex = r'\b(' + '|'.join(re.escape(c) for c in char_names) + r')\b'
+        else:
+            all_names_regex = r'\b([A-Z][a-z]+)\b'
     else:
         all_names_regex = r'\b([A-Z][a-z]+)\b' # Fallback
         
@@ -107,8 +117,18 @@ def parse_dataframe(df, confirmed_characters_list=None, ai_metadata=None):
             if not speaker and final_type == '대사':
                 # Fallback: 화자 추출 시도
                 if confirmed_characters_list:
-                    char_regex = r'(' + '|'.join(re.escape(c) for c in confirmed_characters_list.keys()) + r')'
-                    np = rf'(?:(?:the|a|an|his|her|their)\s+)?{char_regex}'
+                    if isinstance(confirmed_characters_list, dict):
+                        char_names = list(confirmed_characters_list.keys())
+                    elif isinstance(confirmed_characters_list, list):
+                        char_names = confirmed_characters_list
+                    else:
+                        char_names = []
+                    
+                    if char_names:
+                        char_regex = r'(' + '|'.join(re.escape(c) for c in char_names) + r')'
+                        np = rf'(?:(?:the|a|an|his|her|their)\s+)?{char_regex}'
+                    else:
+                        np = r'(?:(?:the|a|an|his|her|their)\s+)?([A-Z][a-z]+)'
                 else:
                     np = r'(?:(?:the|a|an|his|her|their)\s+)?([A-Z][a-z]+)'
                 
