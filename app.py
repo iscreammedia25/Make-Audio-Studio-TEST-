@@ -185,6 +185,7 @@ def voice_selector_ui(key_label, current_voice_id, voices_dict, container_key, c
                 st.warning("ElevenLabs API Key를 먼저 설정하세요.")
             else:
                 st.caption("영상이나 음성 파일을 올려 이 캐릭터의 목소리로 복제합니다.")
+                st.info("💡1분 내외 길이의 파일 권장. (최소 5초 이상)")
                 c_file = st.file_uploader("파일 업로드 (mp4, mp3, wav)", type=['mp4', 'mp3', 'wav'], key=f"c_file_{container_key}")
                 if c_file:
                     if st.button("🎙️ 목소리 추출 및 미리보기", key=f"c_btn_{container_key}", use_container_width=True):
