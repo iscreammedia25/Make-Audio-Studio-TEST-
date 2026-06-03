@@ -78,7 +78,7 @@ def parse_dataframe(df, confirmed_characters_list=None, ai_metadata=None):
         text = str(row.get('Text', ''))
         
         if not text.strip(): continue
-        text = text.replace(‘”’, ‘”’).replace(‘”’, ‘”’).replace(‘’’, “’”).replace(‘’’, “’”)
+        text = text.replace('\u201c', '"').replace('\u201d', '"').replace('\u2018', "'").replace('\u2019', "'")
         
         # 큰 따옴표 쌍("...") 또는 작은 따옴표 쌍('...')을 기준으로 분리
         raw_parts = re.split(r'("[^"]*"|\'[^\']*\')', text)
