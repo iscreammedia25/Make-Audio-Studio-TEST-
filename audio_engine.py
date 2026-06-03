@@ -20,6 +20,26 @@ def check_api_key(api_key):
     except Exception as e:
         return {"success": False, "error": str(e)}
 
+def get_subscription_info(api_key):
+    """ElevenLabs 구독 정보(보이스 슬롯 사용량 포함)를 가져옵니다."""
+    api_key = api_key.strip()
+    url = "https://api.elevenlabs.io/v1/user/subscription"
+    headers = {"xi-api-key": api_key}
+    try:
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()
+        data = response.json()
+        return {
+            "success": True,
+            "tier": data.get("tier", "unknown"),
+            "voice_limit": data.get("voice_limit", 0),
+            "professional_voice_limit": data.get("professional_voice_limit", 0),
+            "character_count": data.get("character_count", 0),
+            "character_limit": data.get("character_limit", 0),
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
 def get_voices(api_key):
     """ElevenLabs에서 사용 가능한 목소리 목록을 가져옵니다."""
     api_key = api_key.strip()
@@ -29,7 +49,7 @@ def get_voices(api_key):
         response = requests.get(url, headers=headers)
         response.raise_for_status()
         voices = response.json().get('voices', [])
-        return {v['name']: {'id': v['voice_id'], 'preview': v.get('preview_url')} for v in voices}
+        return {v['name']: {'id': v['voice_id'], 'preview': v.get('preview_url')} for v in voices if v.get('name') and v.get('voice_id')}
     except requests.exceptions.HTTPError as e:
         status_code = e.response.status_code
         if status_code == 401:
@@ -40,16 +60,30 @@ def get_voices(api_key):
     except Exception as e:
         return {"error": f"예상치 못한 오류: {str(e)}"}
 
+def _clean_tts_text(text):
+    """TTS 전달 전 텍스트 정제: 따옴표 제거, 불필요한 공백 정리."""
+    import re
+    # 바깥쪽 따옴표 제거 ("..." 또는 '...')
+    t = text.strip()
+    if (t.startswith('"') and t.endswith('"')) or (t.startswith("'") and t.endswith("'")):
+        t = t[1:-1].strip()
+    # 유니코드 따옴표 제거
+    t = t.replace('“', '').replace('”', '').replace('‘', '').replace('’', '')
+    # 연속 공백 정리
+    t = re.sub(r'\s+', ' ', t).strip()
+    return t if t else text
+
 def generate_audio(api_key, text, voice_id, stability=0.5, similarity_boost=0.75, style=0.0, use_speaker_boost=True):
     """ElevenLabs API를 사용하여 텍스트로부터 음성(WAV)을 생성합니다."""
     api_key = api_key.strip()
+    text = _clean_tts_text(text)
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream"
     headers = {
-        "Accept": "audio/mpeg", 
+        "Accept": "audio/mpeg",
         "Content-Type": "application/json",
         "xi-api-key": api_key
     }
-    
+
     data = {
         "text": text,
         "model_id": "eleven_multilingual_v2",
@@ -97,11 +131,49 @@ def add_voice(api_key, name, audio_bytes):
     except Exception as e:
         return {"success": False, "error": str(e)}
 
-def merge_audio(audio_data_list):
-    """여러 MP3 바이트 데이터를 하나로 병합합니다. (단순 바이너리 결합)"""
-    # MP3는 프레임 단위로 구성되어 있어 단순 결합해도 대부분의 플레이어에서 연속 재생됨.
-    combined = b"".join(audio_data_list)
-    return combined
+def normalize_audio(audio_bytes, target_dBFS=-20.0):
+    """발화 구간 기준으로 볼륨을 정규화합니다. 무음 패딩이 RMS 측정을 왜곡하는 것을 방지합니다."""
+    from pydub import AudioSegment
+    import io
+    try:
+        segment = AudioSegment.from_file(io.BytesIO(audio_bytes), format="mp3")
+        # 무음 제거 후 발화 기준으로 RMS 측정 → gain은 원본 전체에 적용
+        stripped = segment.strip_silence(silence_len=100, silence_thresh=-55, padding=50)
+        ref = stripped if len(stripped) >= len(segment) * 0.15 else segment
+        if ref.dBFS <= -60:
+            return audio_bytes
+        change = target_dBFS - ref.dBFS
+        normalized = segment.apply_gain(change)
+        buf = io.BytesIO()
+        normalized.export(buf, format="mp3")
+        return buf.getvalue()
+    except Exception:
+        return audio_bytes
+
+def merge_audio(audio_data_list, silence_between_ms=80):
+    """여러 MP3 바이트 데이터를 pydub으로 디코딩 후 병합합니다.
+    세그먼트 사이에 짧은 무음을 삽입하여 전환부 아티팩트를 방지합니다."""
+    from pydub import AudioSegment
+    import io
+
+    if len(audio_data_list) == 1:
+        return audio_data_list[0]
+
+    silence = AudioSegment.silent(duration=silence_between_ms)
+    combined = AudioSegment.empty()
+    for i, audio_bytes in enumerate(audio_data_list):
+        segment = AudioSegment.from_file(io.BytesIO(audio_bytes), format="mp3")
+        # 후미 무음만 제거 (마지막 500ms 범위, 매우 조용한 부분만 — 실제 음성은 건드리지 않음)
+        trimmed = segment.strip_silence(silence_len=200, silence_thresh=-60, padding=80)
+        # 트리밍 후 길이가 원본의 50% 이하면 너무 많이 잘린 것 → 원본 사용
+        segment = trimmed if len(trimmed) >= len(segment) * 0.5 else segment
+        if i > 0:
+            combined += silence
+        combined += segment
+
+    buf = io.BytesIO()
+    combined.export(buf, format="mp3", bitrate="192k")
+    return buf.getvalue()
 
 def isolate_audio(api_key, audio_bytes):
     """ElevenLabs Audio Isolation API를 사용하여 배경음악 및 노이즈를 제거합니다."""
@@ -122,7 +194,7 @@ def isolate_audio(api_key, audio_bytes):
     except Exception as e:
         return {"success": False, "error": str(e)}
 
-def generate_voice_design_preview(api_key, gender, age, accent, text="The quick brown fox jumps over the lazy dog. This is a longer sample text to meet the minimum requirement of one hundred characters for the ElevenLabs Voice Design API preview generation."):
+def generate_voice_design_preview(api_key, gender, age, accent, text="The quick brown fox jumps over the lazy dog. This is a longer sample text to meet the minimum requirement of one hundred characters for the ElevenLabs Voice Design API preview generation.", custom_description=None):
     """일레븐랩스 보이스 디자인 API를 사용하여 임시 보이스 샘플을 생성합니다."""
     api_key = api_key.strip()
     url = "https://api.elevenlabs.io/v1/text-to-voice/design"
@@ -130,10 +202,12 @@ def generate_voice_design_preview(api_key, gender, age, accent, text="The quick 
         "xi-api-key": api_key,
         "Content-Type": "application/json"
     }
-    
-    # 성별, 나이, 억양을 조합하여 20자 이상의 상세 설명문 생성 (422 오류 방지)
-    description = f"A {gender} voice, {age}, with a {accent} accent, speaking clearly for a children's storybook."
-    
+
+    if custom_description and len(custom_description.strip()) >= 20:
+        description = custom_description.strip()
+    else:
+        description = f"A {gender} voice, {age}, with a {accent} accent, speaking clearly for a children's storybook."
+
     data = {
         "voice_description": description,
         "text": text,
@@ -149,18 +223,16 @@ def generate_voice_design_preview(api_key, gender, age, accent, text="The quick 
         
         if not previews:
             return {"success": False, "error": "생성된 보이스 샘플이 없습니다."}
-            
-        # 첫 번째 샘플 사용
-        first_sample = previews[0]
+
         import base64
-        audio_bytes = base64.b64decode(first_sample["audio_base_64"])
-        gen_voice_id = first_sample["generated_voice_id"]
-        
-        return {
-            "success": True, 
-            "audio_bytes": audio_bytes, 
-            "generated_voice_id": gen_voice_id
-        }
+        samples = [
+            {
+                "audio_bytes": base64.b64decode(p["audio_base_64"]),
+                "generated_voice_id": p["generated_voice_id"],
+            }
+            for p in previews
+        ]
+        return {"success": True, "samples": samples}
     except Exception as e:
         error_msg = str(e)
         if hasattr(e, 'response') and e.response is not None:
@@ -187,6 +259,17 @@ def create_voice_from_design(api_key, voice_name, generated_voice_id, descriptio
         return {"success": True, "voice_id": response.json().get("voice_id")}
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+def concat_audio(audio_bytes_list):
+    """여러 MP3 바이트를 처리 없이 단순 순서대로 연결합니다 (mBook 전체 병합용)."""
+    from pydub import AudioSegment
+    import io
+    combined = AudioSegment.empty()
+    for ab in audio_bytes_list:
+        combined += AudioSegment.from_file(io.BytesIO(ab), format="mp3")
+    buf = io.BytesIO()
+    combined.export(buf, format="mp3", bitrate="192k")
+    return buf.getvalue()
 
 def apply_speed_control(audio_bytes, speed):
     """ffmpeg의 atempo 필터를 사용하여 피치를 유지하며 오디오 속도를 조절합니다."""

@@ -1,3 +1,10 @@
+import sys
+if sys.version_info < (3, 10):
+    print(f"\n⚠️  Python {sys.version_info.major}.{sys.version_info.minor} 감지됨.")
+    print("이 앱은 Python 3.10 이상을 권장합니다.")
+    print("Homebrew로 설치: brew install python@3.11")
+    print("설치 후 가상환경 재생성: python3.11 -m venv venv && source venv/bin/activate\n")
+
 import streamlit as st
 import processor
 import audio_engine
@@ -30,15 +37,27 @@ if 'gemini_api_key' not in st.session_state:
     st.session_state.gemini_api_key = ""
 if 'voices' not in st.session_state:
     st.session_state.voices = {}
+if 'subscription_info' not in st.session_state:
+    st.session_state.subscription_info = None
 
-# 난이도별 데이터 관리 (Normal, Easy, Difficult)
-DIFFICULTIES = ["Normal", "Easy", "Difficult"]
+# 난이도별 데이터 관리 (Normal, Easy, Difficult, mBook)
+DIFFICULTIES = ["Normal", "Easy", "Difficult", "mBook"]
 if 'parsed_data_dict' not in st.session_state:
     st.session_state.parsed_data_dict = {d: [] for d in DIFFICULTIES}
 if 'voice_mappings_dict' not in st.session_state:
     st.session_state.voice_mappings_dict = {d: {} for d in DIFFICULTIES}
 if 'audio_cache_dict' not in st.session_state:
     st.session_state.audio_cache_dict = {d: {} for d in DIFFICULTIES}
+if 'merged_scene_cache' not in st.session_state:
+    st.session_state.merged_scene_cache = {d: {} for d in DIFFICULTIES}
+if 'merged_scene_cache_size' not in st.session_state:
+    st.session_state.merged_scene_cache_size = {d: 0 for d in DIFFICULTIES}
+if 'generation_errors' not in st.session_state:
+    st.session_state.generation_errors = []
+if 'seg_page' not in st.session_state:
+    st.session_state.seg_page = {d: 0 for d in DIFFICULTIES}
+if 'speed_settings' not in st.session_state:
+    st.session_state.speed_settings = {"내레이션": 1.0}
 
 if 'characters' not in st.session_state:
     st.session_state.characters = {}
@@ -60,6 +79,8 @@ def reset_all_state():
     st.session_state.script_parsed_dict = {d: False for d in DIFFICULTIES}
     st.session_state.parsed_data_dict = {d: [] for d in DIFFICULTIES}
     st.session_state.audio_cache_dict = {d: {} for d in DIFFICULTIES}
+    st.session_state.merged_scene_cache = {d: {} for d in DIFFICULTIES}
+    st.session_state.merged_scene_cache_size = {d: 0 for d in DIFFICULTIES}
     st.session_state.voice_mappings_dict = {d: {} for d in DIFFICULTIES}
     st.session_state.characters = {}
     st.session_state.character_voice_mappings = {}
@@ -103,14 +124,21 @@ def voice_selector_ui(key_label, current_voice_id, voices_dict, container_key, c
                 none_type = "primary" if current_voice_id == "" else "secondary"
                 if st.button("선택 안 함", key=f"none_{container_key}", use_container_width=True, type=none_type):
                     return ""
-                
-                manual_type = "primary" if current_voice_id == "manual" else "secondary"
-                if st.button("➕ 수동 ID 입력", key=f"manual_btn_{container_key}", use_container_width=True, type=manual_type):
-                    return "manual"
-                
+
+                st.divider()
+                st.caption("🔑 Voice ID 직접 입력")
+                is_manual = current_voice_id and current_voice_id not in [v['id'] for v in voices_dict.values() if isinstance(v, dict)]
+                prefill = current_voice_id if is_manual else ""
+                manual_id_input = st.text_input("Voice ID", value=prefill, key=f"manual_id_{container_key}", placeholder="예: 21m00Tcm4TlvDq8ikWAM", label_visibility="collapsed")
+                if st.button("✅ 이 ID로 설정", key=f"manual_confirm_{container_key}", use_container_width=True):
+                    if manual_id_input.strip():
+                        return manual_id_input.strip()
+
                 st.divider()
                 for name in filtered_voices:
                     v_data = voices_dict[name]
+                    if not isinstance(v_data, dict):
+                        continue
                     v_id = v_data['id']
                     v_preview = v_data.get('preview')
                     is_selected = (v_id == current_voice_id)
@@ -129,51 +157,134 @@ def voice_selector_ui(key_label, current_voice_id, voices_dict, container_key, c
             if not st.session_state.api_key:
                 st.warning("ElevenLabs API Key를 먼저 설정하세요.")
             else:
-                st.caption("Gemini가 분석한 특징을 바탕으로 새 목소리를 디자인합니다.")
-                d_col1, d_col2 = st.columns(2)
-                
-                # 매핑 로직 (char_info가 None일 경우 대비)
-                gender_map = {"남성": "male", "여성": "female", "중성": "female"}
-                age_map = {"아이": "young", "성인": "middle_aged", "노인": "old"}
-                
-                # 기본값 설정
-                default_gender_idx = 1 # female
-                default_age_idx = 1    # middle_aged
-                
-                if char_info:
-                    if gender_map.get(char_info.get('gender')) == "male":
-                        default_gender_idx = 0
-                    
-                    age_val = age_map.get(char_info.get('age'), "middle_aged")
-                    if age_val in ["young", "middle_aged", "old"]:
-                        default_age_idx = ["young", "middle_aged", "old"].index(age_val)
+                st.caption("스토리 맥락을 반영한 보이스 설명을 작성하고 ElevenLabs로 신규 목소리를 생성합니다.")
 
-                d_gender = d_col1.selectbox("성별", ["male", "female"], index=default_gender_idx, key=f"d_gen_{container_key}")
-                d_age = d_col2.selectbox("나이", ["young", "middle_aged", "old"], index=default_age_idx, key=f"d_age_{container_key}")
-                d_accent = st.selectbox("억양", ["american", "british", "african", "australian", "indian"], key=f"d_acc_{container_key}")
-                
-                if st.button("🎲 랜덤 샘플 생성 및 재생성", key=f"d_gen_btn_{container_key}", use_container_width=True):
-                    with st.spinner("목소리 디자인 중..."):
-                        res = audio_engine.generate_voice_design_preview(st.session_state.api_key, d_gender, d_age, d_accent)
-                        if res['success']:
-                            st.session_state.design_previews[char_name] = {"audio": res['audio_bytes'], "id": res['generated_voice_id']}
-                        else:
-                            st.error(f"생성 실패: {res['error']}")
-                
+                # 캐릭터 실제 대사 추출 (샘플로 활용)
+                char_lines_for_ai = []
+                if char_name:
+                    for d in DIFFICULTIES:
+                        for item in st.session_state.get('parsed_data_dict', {}).get(d, []):
+                            if item.get('character') == char_name and item.get('type') == '대사':
+                                line_text = item.get('text', '').strip('"').strip("'").strip()
+                                if line_text and line_text not in char_lines_for_ai:
+                                    char_lines_for_ai.append(line_text)
+                        if len(char_lines_for_ai) >= 5:
+                            break
+
+                # 세션에 저장된 설명문 초기화
+                # text_area의 key와 동일한 키를 session_state에 사용해야
+                # Gemini 생성 결과가 텍스트 영역에 즉시 반영됨
+                desc_key = f"d_desc_area_{container_key}"
+                if desc_key not in st.session_state:
+                    _g_map = {"남성": "male", "여성": "female", "중성": "neutral"}
+                    _a_map = {"아동": "child", "청소년": "teenage", "성인": "adult", "노인": "elderly", "아이": "child"}
+                    _t_map = {
+                        "차분한": "calm and composed", "장난기있는": "playful and mischievous",
+                        "활발한": "energetic and lively", "따뜻한": "warm and nurturing",
+                        "씩씩한": "brave and bold", "부드러운": "gentle and soft",
+                        "밝은": "bright and cheerful", "어두운": "somber and serious",
+                        "신중한": "thoughtful and measured", "엄격한": "stern and authoritative",
+                        "재미있는": "fun and humorous", "귀여운": "sweet and endearing",
+                        "용감한": "courageous and strong", "지혜로운": "wise and knowing",
+                        "명랑한": "cheerful and upbeat", "슬픈": "melancholic and gentle",
+                        "보통": "natural and conversational",
+                    }
+                    if char_info:
+                        g = _g_map.get(char_info.get('gender', ''), 'neutral')
+                        a = _a_map.get(char_info.get('age', ''), 'adult')
+                        t_raw = char_info.get('tone', '보통')
+                        t = _t_map.get(t_raw, t_raw if t_raw.isascii() else 'natural and conversational')
+                        st.session_state[desc_key] = f"A {t} {g} {a} voice, warm and clear, suitable for a children's storybook."
+                    else:
+                        st.session_state[desc_key] = "A warm, clear adult voice with a gentle and natural tone, suitable for a children's storybook narrator."
+
+                # Gemini 자동 생성 버튼 (rerun 없이 session_state 직접 업데이트 → 팝오버 유지)
+                gemini_available = bool(st.session_state.get('gemini_api_key'))
+                if gemini_available:
+                    if st.button("✨ Gemini로 보이스 설명 자동 생성", key=f"d_gemini_btn_{container_key}", use_container_width=True):
+                        with st.spinner("Gemini가 스토리를 분석해 보이스 설명을 작성 중..."):
+                            best_model = st.session_state.get('gemini_model', 'models/gemini-1.5-flash')
+                            g_res = llm_helper.generate_voice_description(
+                                st.session_state.gemini_api_key,
+                                char_name or "캐릭터",
+                                char_info or {},
+                                char_lines=char_lines_for_ai,
+                                model_name=best_model
+                            )
+                            if g_res['success']:
+                                st.session_state[desc_key] = g_res['description']
+                            else:
+                                st.error(f"Gemini 오류: {g_res['error']}")
+                else:
+                    st.info("💡 Gemini API Key를 설정하면 스토리 맥락을 반영한 설명을 자동 생성할 수 있습니다.")
+
+                # 보이스 설명 편집 텍스트 영역 (key=desc_key → session_state와 자동 동기화)
+                st.text_area(
+                    "보이스 설명 (영문)",
+                    key=desc_key,
+                    height=110,
+                    placeholder="예: A warm, cheerful young girl's voice with a bright and energetic tone, full of curiosity and wonder.",
+                    help="ElevenLabs에 전달되는 보이스 설명입니다. 직접 수정하거나 Gemini로 자동 생성하세요."
+                )
+                voice_desc_input = st.session_state[desc_key]
+
+                # 샘플 텍스트 (캐릭터 실제 대사 사용 or 기본값)
+                if char_lines_for_ai:
+                    sample_text = " ".join(char_lines_for_ai[:3])
+                    if len(sample_text) < 100:
+                        sample_text += " " + " ".join(char_lines_for_ai[:2])
+                else:
+                    sample_text = "Hello! I'm so happy to meet you. Let's go on an adventure together through the magical forest!"
+
+                if st.button("🎲 샘플 생성 및 재생성", key=f"d_gen_btn_{container_key}", use_container_width=True, type="primary"):
+                    if len(voice_desc_input.strip()) < 20:
+                        st.warning("보이스 설명을 20자 이상 입력해 주세요.")
+                    else:
+                        with st.spinner("ElevenLabs에서 목소리 디자인 중..."):
+                            res = audio_engine.generate_voice_design_preview(
+                                st.session_state.api_key,
+                                gender="female", age="middle_aged", accent="american",
+                                text=sample_text,
+                                custom_description=voice_desc_input.strip()
+                            )
+                            if res['success']:
+                                st.session_state.design_previews[char_name] = {
+                                    "samples": res['samples'],
+                                    "selected_idx": 0,
+                                    "desc": voice_desc_input.strip()
+                                }
+                            else:
+                                st.error(f"생성 실패: {res['error']}")
+
                 if char_name in st.session_state.design_previews:
-                    st.write("🎧 **생성된 샘플 들어보기**")
-                    st.audio(st.session_state.design_previews[char_name]['audio'], format="audio/mpeg")
-                    if st.button("✅ 이 목소리로 저장 및 확정", key=f"d_save_{container_key}", type="primary", use_container_width=True):
-                        with st.spinner("라이브러리에 저장 중..."):
+                    preview_data = st.session_state.design_previews[char_name]
+                    samples = preview_data.get("samples", [])
+                    selected_idx = preview_data.get("selected_idx", 0)
+
+                    st.write(f"🎧 **생성된 샘플 ({len(samples)}개) — 들어보고 가장 나은 걸 선택하세요**")
+                    for i, sample in enumerate(samples):
+                        s_cols = st.columns([0.5, 5, 2])
+                        is_selected = (i == selected_idx)
+                        s_cols[0].markdown("✅" if is_selected else "　")
+                        s_cols[1].audio(sample["audio_bytes"], format="audio/mpeg")
+                        btn_label = "선택됨" if is_selected else f"#{i+1} 선택"
+                        btn_type = "primary" if is_selected else "secondary"
+                        if s_cols[2].button(btn_label, key=f"d_sel_{container_key}_{i}", type=btn_type, use_container_width=True):
+                            st.session_state.design_previews[char_name]["selected_idx"] = i
+
+                    st.divider()
+                    if st.button("✅ 선택한 목소리로 저장 및 확정", key=f"d_save_{container_key}", type="primary", use_container_width=True):
+                        chosen = samples[selected_idx]
+                        with st.spinner("ElevenLabs 라이브러리에 저장 중..."):
+                            saved_desc = preview_data.get('desc', voice_desc_input.strip())
                             save_res = audio_engine.create_voice_from_design(
-                                st.session_state.api_key, 
-                                f"{char_name}_AI", 
-                                st.session_state.design_previews[char_name]['id'],
-                                description=f"Designed for {char_name} via Make Audio Studio"
+                                st.session_state.api_key,
+                                f"{char_name}_AI",
+                                chosen["generated_voice_id"],
+                                description=saved_desc
                             )
                             if save_res['success']:
                                 st.success("저장 완료!")
-                                # 보이스 목록 새로고침
                                 st.session_state.voices = audio_engine.get_voices(st.session_state.api_key)
                                 return save_res['voice_id']
                             else:
@@ -227,6 +338,135 @@ def voice_selector_ui(key_label, current_voice_id, voices_dict, container_key, c
                                     st.error(f"클로닝 실패: {res['error']}")
     return current_voice_id
 
+
+@st.fragment
+def audio_player_display(current_view_diff: str, difficulty_suffix: str):
+    """오디오 플레이어 + 다운로드 섹션. 부분 렌더링으로 전체 페이지 재렌더 방지."""
+    if not st.session_state.audio_cache_dict[current_view_diff]:
+        return
+
+    current_scene = None
+    lines_mapping = {}
+    for item in st.session_state.parsed_data_dict[current_view_diff]:
+        key = f"{item['scene']}_{item['line']}"
+        if key not in lines_mapping:
+            lines_mapping[key] = []
+        lines_mapping[key].append(item)
+
+    for line_key, segs in lines_mapping.items():
+        scene_tag = segs[0]['scene']
+        if scene_tag != current_scene:
+            current_scene = scene_tag
+            st.subheader(f"🎬 Scene: {current_scene}")
+
+        if line_key in st.session_state.audio_cache_dict[current_view_diff]:
+            with st.container(border=True):
+                cols = st.columns([1.5, 5.5, 2, 1.5, 1.5])
+                cols[0].write(f"**ID: {segs[0]['line']}**")
+
+                content_html = ""
+                for seg in segs:
+                    is_dialogue = seg['type'] == '대사'
+                    text_val = seg['text']
+                    if is_dialogue and not (text_val.startswith(('"', "'")) and text_val.endswith(('"', "'"))):
+                        text_val = f'"{text_val}"'
+                    color = "blue" if is_dialogue else "gray"
+                    content_html += f'<span style="color:{color};">[{seg["character"]}]</span> {text_val} '
+                cols[1].markdown(content_html, unsafe_allow_html=True)
+
+                cols[2].audio(st.session_state.audio_cache_dict[current_view_diff][line_key], format="audio/mp3")
+
+                _bid = segs[0].get('book_id', 'Unknown')
+                _seq = segs[0].get('seq_num', 'ST00')
+                if current_view_diff == "mBook":
+                    dl_filename = f"{_bid}_mBook_{_seq}_A.mp3"
+                else:
+                    dl_filename = f"{_bid}_{segs[0].get('scene_num','SC00')}_{_seq}_{difficulty_suffix}.mp3"
+                cols[3].download_button("⬇️ 다운", data=st.session_state.audio_cache_dict[current_view_diff][line_key], file_name=dl_filename, mime="audio/mpeg", key=f"dl_{line_key}", use_container_width=True)
+
+                if cols[4].button("🔄 다시 생성", key=f"regen_{line_key}"):
+                    with st.spinner(f"ID: {segs[0]['line']} 문장 다시 생성 중..."):
+                        try:
+                            regen_audios = []
+                            for seg in segs:
+                                char_name = seg['character']
+                                voice_id = st.session_state.voice_mappings_dict[current_view_diff].get(seg['segment_id'])
+                                if not voice_id:
+                                    if char_name == '내레이션':
+                                        voice_id = st.session_state.get('all_narration_voice_id', '')
+                                    else:
+                                        voice_id = st.session_state.character_voice_mappings.get(char_name, '')
+                                if voice_id:
+                                    audio_bytes = audio_engine.generate_audio(st.session_state.api_key, seg['text'], voice_id)
+                                    if isinstance(audio_bytes, bytes):
+                                        current_speed = st.session_state.speed_settings.get(char_name, 1.0)
+                                        if current_speed != 1.0:
+                                            audio_bytes = audio_engine.apply_speed_control(audio_bytes, current_speed)
+                                        audio_bytes = audio_engine.normalize_audio(audio_bytes)
+                                        regen_audios.append(audio_bytes)
+                            if regen_audios:
+                                st.session_state.audio_cache_dict[current_view_diff][line_key] = audio_engine.merge_audio(regen_audios)
+                                st.session_state.merged_scene_cache[current_view_diff] = {}
+                                st.session_state.merged_scene_cache_size[current_view_diff] = 0
+                                st.success(f"ID: {segs[0]['line']} 재생성 완료!")
+                                st.rerun(scope="fragment")
+                            else:
+                                st.error("보이스 설정이 되어 있지 않습니다.")
+                        except Exception as e:
+                            st.error(f"재생성 중 오류 발생: {str(e)}")
+
+    # 다운로드 섹션
+    st.divider()
+    st.header("4. 결과물 전체 다운로드")
+    col1, col2 = st.columns(2)
+    with col1:
+        zip_data = exporter.create_individual_zip(difficulty_suffix, st.session_state.parsed_data_dict[current_view_diff], st.session_state.audio_cache_dict[current_view_diff], difficulty=current_view_diff)
+        if zip_data:
+            st.download_button(
+                label=f"📦 {current_view_diff} 개별 파일 다운로드 (ZIP)",
+                data=zip_data,
+                file_name=f"{difficulty_suffix}_individual_files.zip",
+                mime="application/octet-stream",
+                use_container_width=True,
+                key=f"btn_dl_individual_{current_view_diff}"
+            )
+    with col2:
+        scene_groups = {}
+        added_line_keys = set()
+        for item in st.session_state.parsed_data_dict[current_view_diff]:
+            scene = item['scene']
+            lk = f"{scene}_{item['line']}"
+            if lk in added_line_keys:
+                continue
+            if scene not in scene_groups:
+                scene_groups[scene] = []
+            if lk in st.session_state.audio_cache_dict[current_view_diff]:
+                scene_groups[scene].append(st.session_state.audio_cache_dict[current_view_diff][lk])
+                added_line_keys.add(lk)
+        if scene_groups:
+            current_cache_size = len(st.session_state.audio_cache_dict[current_view_diff])
+            cached_size = st.session_state.merged_scene_cache_size.get(current_view_diff, 0)
+            if current_cache_size != cached_size or not st.session_state.merged_scene_cache.get(current_view_diff):
+                merged_cache = {s: audio_engine.merge_audio(al) for s, al in scene_groups.items() if al}
+                # mBook은 모든 씬을 하나의 파일로 합침
+                if current_view_diff == "mBook" and len(merged_cache) > 1:
+                    merged_cache = {"mBook": audio_engine.concat_audio(list(merged_cache.values()))}
+                st.session_state.merged_scene_cache[current_view_diff] = merged_cache
+                st.session_state.merged_scene_cache_size[current_view_diff] = current_cache_size
+            else:
+                merged_cache = st.session_state.merged_scene_cache[current_view_diff]
+            first_book_id = st.session_state.parsed_data_dict[current_view_diff][0].get('book_id', '') if st.session_state.parsed_data_dict[current_view_diff] else ""
+            zip_data_merged = exporter.create_merged_zip(difficulty_suffix, merged_cache, book_id=first_book_id, difficulty=current_view_diff)
+            st.download_button(
+                label=f"🎞️ {current_view_diff} 씬별 병합 다운로드 (ZIP)",
+                data=zip_data_merged,
+                file_name=f"{difficulty_suffix}_merged_scenes.zip",
+                mime="application/octet-stream",
+                use_container_width=True,
+                key=f"btn_dl_merged_{current_view_diff}"
+            )
+
+
 # 사이드바: 기본 설정 및 입력 UI
 with st.sidebar:
     st.title("⚙️ 설정")
@@ -250,10 +490,34 @@ with st.sidebar:
                         st.session_state.voices = {"수동 입력": "manual"}
                     else:
                         st.session_state.voices = voices
+                        sub = audio_engine.get_subscription_info(clean_key)
+                        if sub["success"]:
+                            st.session_state.subscription_info = sub
                         st.success("✅ 인증 성공 및 목소리 목록 로드 완료!")
                         st.balloons()
         else:
             st.warning("API Key를 입력해 주세요.")
+
+    # 보이스 슬롯 현황 표시
+    if st.session_state.api_key and st.session_state.voices:
+        sub = st.session_state.get("subscription_info")
+        if sub and sub.get("success"):
+            used = len([v for v in st.session_state.voices.values() if isinstance(v, dict)])
+            limit = sub.get("voice_limit", 0)
+            ratio = used / limit if limit > 0 else 0
+            bar_color = "normal" if ratio < 0.8 else ("off" if ratio >= 1.0 else "off")
+            st.caption("🎙️ 보이스 슬롯 현황")
+            st.progress(min(ratio, 1.0))
+            if ratio >= 1.0:
+                st.error(f"슬롯 초과: {used} / {limit} — 새 보이스 추가 시 기존 보이스가 삭제됩니다.")
+            elif ratio >= 0.8:
+                st.warning(f"슬롯: {used} / {limit} — 곧 한도에 도달합니다.")
+            else:
+                st.caption(f"사용 중: {used} / {limit}")
+            char_used = sub.get("character_count", 0)
+            char_limit = sub.get("character_limit", 0)
+            if char_limit > 0:
+                st.caption(f"📝 이번 달 글자 수: {char_used:,} / {char_limit:,}")
 
     st.divider()
     st.subheader("Gemini 설정")
@@ -307,8 +571,8 @@ with st.sidebar:
 
     st.divider()
     # 사이드바의 난이도는 "현재 뷰어에서 볼 난이도"를 결정함
-    current_view_diff = st.radio("표시할 난이도 선택", DIFFICULTIES)
-    difficulty_suffix = {"Normal": "N_A", "Easy": "E_A", "Difficult": "D_A"}.get(current_view_diff, "N_A")
+    current_view_diff = st.radio("필요한 음원 선택", DIFFICULTIES)
+    difficulty_suffix = {"Normal": "N_A", "Easy": "E_A", "Difficult": "D_A", "mBook": "A"}.get(current_view_diff, "N_A")
     story_no = "" # UI에서 제거됨
 
 st.title("🎙️ 동화 대본 자동 더빙 및 편집 에이전트")
@@ -316,25 +580,39 @@ st.title("🎙️ 동화 대본 자동 더빙 및 편집 에이전트")
 st.divider()
 st.header("Step 1: 대본 파일 업로드 및 AI 분석")
 import pandas as pd
-uploaded_scripts = st.file_uploader("대본 파일 업로드 (CSV 또는 Excel) - 최대 3개", type=['csv', 'xlsx', 'xls'], key="script_uploader", accept_multiple_files=True)
+uploaded_scripts = st.file_uploader("대본 파일 업로드 (CSV 또는 Excel) - 최대 4개", type=['csv', 'xlsx', 'xls'], key="script_uploader", accept_multiple_files=True)
 
 if uploaded_scripts:
-    # 파일명 기반 자동 매핑 및 수동 조정 UI
-    st.subheader("파일별 난이도 매핑")
+    # 파일명 기반 자동 매핑 및 수동 조정 UI (Normal > Easy > Difficult > mBook 고정 순서)
+    st.subheader("필요한 음원별 매핑")
     file_mapping = {}
-    
-    cols = st.columns(len(uploaded_scripts))
-    for idx, f in enumerate(uploaded_scripts):
-        with cols[idx]:
-            st.write(f"📄 {f.name}")
-            # 파일명에 힌트가 있으면 자동 선택
-            default_idx = 0
-            fname_lower = f.name.lower()
-            if "easy" in fname_lower or "쉬움" in fname_lower: default_idx = 1
-            elif "diff" in fname_lower or "hard" in fname_lower or "어려움" in fname_lower: default_idx = 2
-            
-            selected_diff = st.selectbox(f"난이도 선택 ({idx})", DIFFICULTIES, index=default_idx, key=f"diff_map_{idx}", label_visibility="collapsed")
-            file_mapping[selected_diff] = f
+
+    file_options = ["(없음)"] + [f.name for f in uploaded_scripts]
+    file_by_name = {f.name: f for f in uploaded_scripts}
+
+    # 파일명으로 자동 추측
+    def _guess_file(diff):
+        hints = {
+            "Normal":   lambda n: "easy" not in n and "diff" not in n and "hard" not in n and "mbook" not in n,
+            "Easy":     lambda n: "easy" in n or "쉬움" in n,
+            "Difficult":lambda n: "diff" in n or "hard" in n or "어려움" in n,
+            "mBook":    lambda n: "mbook" in n,
+        }
+        check = hints.get(diff, lambda n: False)
+        for f in uploaded_scripts:
+            if check(f.name.lower()):
+                return f.name
+        return "(없음)"
+
+    cols = st.columns(4)
+    for col, diff in zip(cols, DIFFICULTIES):
+        with col:
+            st.markdown(f"**{diff}**")
+            default_file = _guess_file(diff)
+            default_idx = file_options.index(default_file) if default_file in file_options else 0
+            selected_name = st.selectbox(diff, file_options, index=default_idx, key=f"diff_map_{diff}", label_visibility="collapsed")
+            if selected_name != "(없음)":
+                file_mapping[diff] = file_by_name[selected_name]
 
     if st.button("✨ 모든 대본 AI 분석하기", type="primary", use_container_width=True):
         if not file_mapping:
@@ -365,9 +643,9 @@ if uploaded_scripts:
                         res = llm_helper.extract_script_metadata_via_gemini(st.session_state.gemini_api_key, script_text, model_name=best_model)
                         
                         if res['success']:
-                            # 캐릭터 목록 합치기 (Gemini가 추출한 상세 정보 보존)
+                            # 캐릭터 목록 합치기 (Gemini가 추출한 상세 정보 보존, 내레이션 제외)
                             for c_name, c_info in res['characters'].items():
-                                if c_name not in all_characters_data:
+                                if c_name not in all_characters_data and c_name.strip().lower() not in ('내레이션', 'narration', 'narrator'):
                                     all_characters_data[c_name] = c_info
                             
                             # 대본 파싱
@@ -443,8 +721,9 @@ if any(st.session_state.script_parsed_dict.values()):
         # 8열 그리드
         char_cols = st.columns(8)
         
-        # 캐릭터 카드
-        for i, (name, info) in enumerate(st.session_state.characters.items()):
+        # 캐릭터 카드 (내레이션은 위 섹션에서 처리하므로 제외)
+        _NARRATION_NAMES = {'내레이션', 'narration', 'narrator'}
+        for i, (name, info) in enumerate((k, v) for k, v in st.session_state.characters.items() if k.strip().lower() not in _NARRATION_NAMES):
             with char_cols[i % 8]:
                 with st.expander(f"👤 {name}", expanded=True):
                     new_name = st.text_input(f"이름", value=name, key=f"edit_char_{name}", label_visibility="collapsed")
@@ -452,9 +731,10 @@ if any(st.session_state.script_parsed_dict.values()):
                         if new_name and new_name not in st.session_state.characters:
                             st.session_state.characters[new_name] = st.session_state.characters.pop(name)
                             st.session_state.character_voice_mappings[new_name] = st.session_state.character_voice_mappings.pop(name, "")
-                            for item in st.session_state.parsed_data:
-                                if item['character'] == name:
-                                    item['character'] = new_name
+                            for d in DIFFICULTIES:
+                                for item in st.session_state.parsed_data_dict[d]:
+                                    if item['character'] == name:
+                                        item['character'] = new_name
                             st.rerun()
 
                     st.caption(f"{info.get('gender', '중성')} | {info.get('age', '성인')} | {info.get('tone', '보통')}")
@@ -496,10 +776,12 @@ if any(st.session_state.script_parsed_dict.values()):
                 st.write("<div style='text-align: center; font-size: 20px;'>➕</div>", unsafe_allow_html=True)
                 new_c_name = st.text_input("이름", key="plus_char_name", placeholder="추가", label_visibility="collapsed")
                 if st.button("추가", key="plus_char_btn", use_container_width=True):
-                    if new_c_name and new_c_name not in st.session_state.characters:
+                    if new_c_name and new_c_name not in st.session_state.characters and new_c_name.strip().lower() not in ('내레이션', 'narration', 'narrator'):
                         st.session_state.characters[new_c_name] = {"name": new_c_name, "gender": "중성", "age": "성인", "tone": "보통"}
                         st.session_state.character_voice_mappings[new_c_name] = ""
                         st.rerun()
+                    elif new_c_name.strip().lower() in ('내레이션', 'narration', 'narrator'):
+                        st.warning("내레이션은 위의 '내레이션 보이스' 섹션에서 설정하세요.")
 
         st.divider()
         if not st.session_state.get('character_confirmed', False):
@@ -524,8 +806,26 @@ if st.session_state.parsed_data_dict[current_view_diff] and st.session_state.get
     h_cols[5].markdown("**추가/삭제**")
     st.write("---")
 
+    # 페이지네이션
+    _PAGE_SIZE = 15
+    _all_segs = st.session_state.parsed_data_dict[current_view_diff]
+    _total = len(_all_segs)
+    _total_pages = max(1, (_total + _PAGE_SIZE - 1) // _PAGE_SIZE)
+    _cur_page = min(st.session_state.seg_page.get(current_view_diff, 0), _total_pages - 1)
+    st.session_state.seg_page[current_view_diff] = _cur_page
+
+    _p_cols = st.columns([1, 3, 1])
+    if _p_cols[0].button("◀ 이전", disabled=(_cur_page == 0), key="seg_prev"):
+        st.session_state.seg_page[current_view_diff] = _cur_page - 1
+        st.rerun()
+    _p_cols[1].markdown(f"<div style='text-align:center'><b>{_cur_page + 1} / {_total_pages} 페이지</b> &nbsp;(총 {_total}줄)</div>", unsafe_allow_html=True)
+    if _p_cols[2].button("다음 ▶", disabled=(_cur_page >= _total_pages - 1), key="seg_next"):
+        st.session_state.seg_page[current_view_diff] = _cur_page + 1
+        st.rerun()
+
+    _start = _cur_page * _PAGE_SIZE
     # 라인별 설정
-    for i, item in enumerate(st.session_state.parsed_data_dict[current_view_diff]):
+    for i, item in enumerate(_all_segs[_start:_start + _PAGE_SIZE], start=_start):
         key = item['segment_id']
         cols = st.columns([0.6, 1.1, 1.5, 4.3, 3.5, 1.0])
         
@@ -587,9 +887,6 @@ if st.session_state.parsed_data_dict[current_view_diff] and st.session_state.get
             else:
                 st.write("API Key 필요")
                 
-            if st.session_state.voice_mappings_dict[current_view_diff].get(key) == "manual":
-                st.session_state.voice_mappings_dict[current_view_diff][key] = st.text_input(f"Voice ID 입력 ({key})", key=f"manual_input_{key}", placeholder="ElevenLabs Voice ID 입력")
-        
         # 6. 추가 (+) 버튼
         with cols[5]:
             if st.button("➕", key=f"add_{key}", help="이 대사 아래에 빈 행 추가"):
@@ -597,10 +894,16 @@ if st.session_state.parsed_data_dict[current_view_diff] and st.session_state.get
                 new_id = str(uuid.uuid4())[:8]
                 new_item = {
                     'scene': item['scene'],
-                    'line': item['line'], # 기존 ST 번호 그대로 유지
+                    'line': item['line'],
+                    'scene_num': item.get('scene_num', 'SC00'),
+                    'seq_num': item.get('seq_num', 'ST00'),
+                    'book_id': item.get('book_id', ''),
+                    'audio_type': item.get('audio_type', 'N'),
+                    'seg_idx': 0,
                     'type': '대사',
                     'character': item['character'],
                     'text': '',
+                    'mood': 'Neutral',
                     'segment_id': new_id
                 }
                 st.session_state.parsed_data_dict[current_view_diff].insert(i + 1, new_item)
@@ -612,13 +915,9 @@ if st.session_state.parsed_data_dict[current_view_diff] and st.session_state.get
                 st.session_state.voice_mappings_dict[current_view_diff].pop(key, None)
                 st.rerun()
 
-    # 속도 조절 세션 초기화
-    if 'speed_settings' not in st.session_state:
-        st.session_state.speed_settings = {"내레이션": 1.0}
-    
-    # 3. 음원 생성 및 미리보기 섹션
+    # 4. 음원 생성 및 미리보기 섹션
     st.divider()
-    st.header("3. 음원 생성 및 미리보기")
+    st.header("4. 음원 생성 및 미리보기")
     
     # 속도 조절 모드 선택 복구
     speed_mode = st.radio("🚀 속도 조절 모드", ["일괄 조정", "개별 조정(보이스/내레이션)"], horizontal=True)
@@ -695,174 +994,110 @@ if st.session_state.parsed_data_dict[current_view_diff] and st.session_state.get
                         st.success("실제 대사 기반 샘플 생성 완료!")
 
     st.info("💡 팁: 캐릭터의 성격(톤)에 맞춰 목소리의 감정 표현이 자동으로 미세 조정됩니다.")
-    
-    if st.button("✨ 모든 난이도 음원 일괄 생성", use_container_width=True):
+
+    def _generate_for_difficulties(target_diffs):
+        """선택한 난이도 목록에 대해 음원을 생성하고 캐시에 저장합니다."""
+        import time
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        total_lines = sum(
+            len(set(f"{item['scene']}_{item['line']}" for item in st.session_state.parsed_data_dict[d]))
+            for d in target_diffs
+        )
+        processed = 0
+        generation_errors = []
+
+        for d in target_diffs:
+            status_text.text(f"[{d}] 음원 생성 중... ({processed}/{total_lines})")
+
+            lines_to_process = {}
+            for item in st.session_state.parsed_data_dict[d]:
+                lk = f"{item['scene']}_{item['line']}"
+                lines_to_process.setdefault(lk, []).append(item)
+
+            for line_key, segments in lines_to_process.items():
+                segment_audios = []
+                for seg in segments:
+                    voice_id = st.session_state.voice_mappings_dict[d].get(seg['segment_id'])
+                    if not voice_id:
+                        cname = seg.get('character', '')
+                        voice_id = (st.session_state.get('all_narration_voice_id', '')
+                                    if cname == '내레이션'
+                                    else st.session_state.character_voice_mappings.get(cname, ''))
+                    if not voice_id:
+                        continue
+
+                    preset = MOOD_PRESETS.get(seg.get('mood', 'Neutral'), MOOD_PRESETS['Neutral'])
+                    audio_bytes = audio_engine.generate_audio(
+                        st.session_state.api_key, seg['text'], voice_id,
+                        stability=preset['stability'],
+                        similarity_boost=preset['similarity_boost'],
+                        style=preset['style']
+                    )
+                    if isinstance(audio_bytes, bytes):
+                        spd = st.session_state.speed_settings.get(seg.get('character', '내레이션'), 1.0)
+                        if spd != 1.0:
+                            audio_bytes = audio_engine.apply_speed_control(audio_bytes, spd)
+                        audio_bytes = audio_engine.normalize_audio(audio_bytes)
+                        segment_audios.append(audio_bytes)
+                    elif isinstance(audio_bytes, dict) and 'error' in audio_bytes:
+                        err_msg = audio_bytes['error']
+                        if '429' in err_msg or 'rate' in err_msg.lower():
+                            generation_errors.append(f"[{d}] {line_key}: API 요청 한도 초과(429) — 잠시 후 다시 시도하세요.")
+                        else:
+                            generation_errors.append(f"[{d}] {seg.get('character','?')} / {line_key}: {err_msg}")
+                    # 연속 API 호출 간 짧은 간격으로 ElevenLabs 응답 품질 보호
+                    time.sleep(0.3)
+
+                if segment_audios:
+                    st.session_state.audio_cache_dict[d][line_key] = audio_engine.merge_audio(segment_audios)
+
+                processed += 1
+                progress_bar.progress(processed / total_lines)
+
+        st.session_state.generation_errors = generation_errors
+        if generation_errors:
+            status_text.text("생성 중 일부 오류가 발생했습니다.")
+        else:
+            status_text.text(f"음원 생성 완료!")
+            st.balloons()
+        st.rerun()
+
+    # ── 현재 난이도 생성 (기본 동작) ──────────────────────────────
+    total_lines_cur = len(set(f"{item['scene']}_{item['line']}" for item in st.session_state.parsed_data_dict[current_view_diff]))
+    if st.button(f"✨ {current_view_diff} 음원 생성 ({total_lines_cur}문장)", type="primary", use_container_width=True):
         if not st.session_state.api_key:
             st.error("API Key가 필요합니다.")
+        elif not st.session_state.script_parsed_dict[current_view_diff]:
+            st.warning(f"{current_view_diff} 대본이 아직 분석되지 않았습니다.")
         else:
-            # 분석 완료된 모든 난이도에 대해 루프 실행
-            target_diffs = [d for d in DIFFICULTIES if st.session_state.script_parsed_dict[d]]
-            
-            if not target_diffs:
-                st.warning("분석 완료된 대본이 없습니다.")
-            else:
-                progress_bar = st.progress(0)
-                status_text = st.empty()
-                
-                total_target_lines = sum(len(set(f"{item['scene']}_{item['line']}" for item in st.session_state.parsed_data_dict[d])) for d in target_diffs)
-                processed_lines_total = 0
-                
-                for d_idx, d in enumerate(target_diffs):
-                    status_text.text(f"[{d}] 난이도 음원 생성 중...")
-                    
-                    # 문장(Line) 단위로 그룹화
-                    lines_to_process = {}
-                    for item in st.session_state.parsed_data_dict[d]:
-                        line_key = f"{item['scene']}_{item['line']}"
-                        if line_key not in lines_to_process:
-                            lines_to_process[line_key] = []
-                        lines_to_process[line_key].append(item)
-                    
-                    for line_key, segments in lines_to_process.items():
-                        segment_audios = []
-                        for seg in segments:
-                            voice_id = st.session_state.voice_mappings_dict[d].get(seg['segment_id'])
-                            
-                            if voice_id:
-                                seg_mood = seg.get('mood', 'Neutral')
-                                preset = MOOD_PRESETS.get(seg_mood, MOOD_PRESETS['Neutral'])
-                                
-                                audio_bytes = audio_engine.generate_audio(
-                                    st.session_state.api_key, 
-                                    seg['text'], 
-                                    voice_id,
-                                    stability=preset['stability'],
-                                    similarity_boost=preset['similarity_boost'],
-                                    style=preset['style']
-                                )
-                                
-                                if isinstance(audio_bytes, bytes):
-                                    char_name = seg.get('character', '내레이션')
-                                    current_speed = st.session_state.speed_settings.get(char_name, 1.0)
-                                    if current_speed != 1.0:
-                                        audio_bytes = audio_engine.apply_speed_control(audio_bytes, current_speed)
-                                    segment_audios.append(audio_bytes)
-                        
-                        if segment_audios:
-                            merged_audio = audio_engine.merge_audio(segment_audios)
-                            st.session_state.audio_cache_dict[d][line_key] = merged_audio
-                        
-                        processed_lines_total += 1
-                        progress_bar.progress(processed_lines_total / total_target_lines)
-                
-                status_text.text("모든 난이도 음원 생성 및 병합 완료!")
-                st.balloons()
+            _generate_for_difficulties([current_view_diff])
 
-    # 오디오 플레이어 시각화 (현재 뷰어 난이도 기준)
-    if st.session_state.audio_cache_dict[current_view_diff]:
-        current_scene = None
-        
-        # 문장 단위 표시를 위해 다시 그룹화
-        lines_mapping = {}
-        for item in st.session_state.parsed_data_dict[current_view_diff]:
-            key = f"{item['scene']}_{item['line']}"
-            if key not in lines_mapping:
-                lines_mapping[key] = []
-            lines_mapping[key].append(item)
-            
-        for line_key, segs in lines_mapping.items():
-            scene_tag = segs[0]['scene']
-            if scene_tag != current_scene:
-                current_scene = scene_tag
-                st.subheader(f"🎬 Scene: {current_scene}")
-            
-            if line_key in st.session_state.audio_cache_dict[current_view_diff]:
-                with st.container(border=True):
-                    cols = st.columns([1.5, 5.5, 2, 2])
-                    cols[0].write(f"**ID: {segs[0]['line']}**")
-                    
-                    # 미리보기 텍스트 구성 (대사는 따옴표 포함)
-                    content_html = ""
-                    for seg in segs:
-                        is_dialogue = seg['type'] == '대사'
-                        text_val = seg['text']
-                        if is_dialogue and not (text_val.startswith(('"', "'")) and text_val.endswith(('"', "'"))):
-                            text_val = f'"{text_val}"'
-                        color = "blue" if is_dialogue else "gray"
-                        content_html += f'<span style="color:{color};">[{seg["character"]}]</span> {text_val} '
-                    cols[1].markdown(content_html, unsafe_allow_html=True)
-                    
-                    cols[2].audio(st.session_state.audio_cache_dict[current_view_diff][line_key], format="audio/mp3")
-                    
-                    if cols[3].button("🔄 다시 생성", key=f"regen_{line_key}"):
-                        with st.spinner(f"ID: {segs[0]['line']} 문장 다시 생성 중..."):
-                            try:
-                                regen_audios = []
-                                for seg in segs:
-                                    char_name = seg['character']
-                                    voice_id = st.session_state.all_narration_voice_id if char_name == "내레이션" else st.session_state.character_voice_mappings.get(char_name)
-                                    
-                                    if voice_id:
-                                        audio_bytes = audio_engine.generate_audio(st.session_state.api_key, seg['text'], voice_id)
-                                        if isinstance(audio_bytes, bytes):
-                                            # 속도 조절 적용
-                                            current_speed = st.session_state.speed_settings.get(char_name, 1.0)
-                                            if current_speed != 1.0:
-                                                audio_bytes = audio_engine.apply_speed_control(audio_bytes, current_speed)
-                                            regen_audios.append(audio_bytes)
-                                
-                                if regen_audios:
-                                    merged_audio = audio_engine.merge_audio(regen_audios)
-                                    st.session_state.audio_cache_dict[current_view_diff][line_key] = merged_audio
-                                    st.success(f"ID: {segs[0]['line']} 문장 재생성 완료!")
-                                    st.rerun()
-                                else:
-                                    st.error("보이스 설정이 되어 있지 않습니다.")
-                            except Exception as e:
-                                st.error(f"재생성 중 오류 발생: {str(e)}")
+    # ── 전체 난이도 일괄 생성 (접힌 옵션) ────────────────────────
+    with st.expander("Normal, Easy, Difficult, mBook 일괄 생성"):
+        ready_diffs = [d for d in DIFFICULTIES if st.session_state.script_parsed_dict[d]]
+        if not ready_diffs:
+            st.info("분석 완료된 난이도가 없습니다.")
+        else:
+            total_all = sum(
+                len(set(f"{item['scene']}_{item['line']}" for item in st.session_state.parsed_data_dict[d]))
+                for d in ready_diffs
+            )
+            st.caption(f"분석 완료: {', '.join(ready_diffs)} — 총 {total_all}문장")
+            if st.button("✨ Normal, Easy, Difficult, mBook 일괄 생성", use_container_width=True):
+                if not st.session_state.api_key:
+                    st.error("API Key가 필요합니다.")
+                else:
+                    _generate_for_difficulties(ready_diffs)
 
-        # 4. 다운로드 섹션
-        st.divider()
-        st.header("4. 결과물 전체 다운로드")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            # 개별 파일 다운로드 (현재 뷰 난이도 기준)
-            zip_data = exporter.create_individual_zip(difficulty_suffix, st.session_state.parsed_data_dict[current_view_diff], st.session_state.audio_cache_dict[current_view_diff])
-            if zip_data:
-                st.download_button(
-                    label=f"📦 {current_view_diff} 개별 파일 다운로드 (ZIP)",
-                    data=zip_data,
-                    file_name=f"{difficulty_suffix}_individual_files.zip",
-                    mime="application/octet-stream",
-                    use_container_width=True,
-                    key=f"btn_download_individual_{current_view_diff}"
-                )
-        
-        with col2:
-            # 씬별 병합 다운로드 (현재 뷰 난이도 기준)
-            scene_groups = {}
-            added_line_keys = set()
-            for item in st.session_state.parsed_data_dict[current_view_diff]:
-                scene = item['scene']
-                line_key = f"{scene}_{item['line']}"
-                if line_key in added_line_keys: continue
-                if scene not in scene_groups: scene_groups[scene] = []
-                if line_key in st.session_state.audio_cache_dict[current_view_diff]:
-                    scene_groups[scene].append(st.session_state.audio_cache_dict[current_view_diff][line_key])
-                    added_line_keys.add(line_key)
-            
-            if scene_groups:
-                merged_cache = {s: audio_engine.merge_audio(al) for s, al in scene_groups.items() if al}
-                first_book_id = st.session_state.parsed_data_dict[current_view_diff][0].get('book_id', '') if st.session_state.parsed_data_dict[current_view_diff] else ""
-                zip_data_merged = exporter.create_merged_zip(difficulty_suffix, merged_cache, book_id=first_book_id)
-                
-                st.download_button(
-                    label=f"🎞️ {current_view_diff} 씬별 병합 다운로드 (ZIP)",
-                    data=zip_data_merged,
-                    file_name=f"{difficulty_suffix}_merged_scenes.zip",
-                    mime="application/octet-stream",
-                    use_container_width=True,
-                    key=f"btn_download_merged_{current_view_diff}"
-                )
+    # 생성 오류 표시 (rerun 이후에도 유지)
+    if st.session_state.generation_errors:
+        st.warning("⚠️ 일부 음원 생성 중 오류가 발생했습니다.")
+        for err in st.session_state.generation_errors:
+            st.error(err)
+        if st.button("오류 메시지 닫기"):
+            st.session_state.generation_errors = []
+            st.rerun()
+
+    # 오디오 플레이어 + 다운로드 (fragment로 부분 렌더링)
+    audio_player_display(current_view_diff, difficulty_suffix)

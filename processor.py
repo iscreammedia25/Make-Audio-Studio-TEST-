@@ -78,10 +78,7 @@ def parse_dataframe(df, confirmed_characters_list=None, ai_metadata=None):
         text = str(row.get('Text', ''))
         
         if not text.strip(): continue
-        text = text.replace('“', '"').replace('”', '"').replace('‘', "'").replace('’', "'")
-        # 세그먼트 분리 (따옴표 기준)
-        # re.split에 괄호를 사용하면 구분자(따옴표 쌍)도 결과에 포함됨
-        text = text.replace('“', '"').replace('”', '"').replace('‘', "'").replace('’', "'")
+        text = text.replace(‘”’, ‘”’).replace(‘”’, ‘”’).replace(‘’’, “’”).replace(‘’’, “’”)
         
         # 큰 따옴표 쌍("...") 또는 작은 따옴표 쌍('...')을 기준으로 분리
         raw_parts = re.split(r'("[^"]*"|\'[^\']*\')', text)
@@ -170,8 +167,6 @@ def parse_dataframe(df, confirmed_characters_list=None, ai_metadata=None):
                 'type': seg['type'], 'character': char_label, 'text': seg['text'], 'mood': seg['mood'],
                 'scene': f"{audio_type}_{scene_num}", 'line': seq_num
             })
-                    
-    return parsed_data, df
                     
     return parsed_data, df
 
