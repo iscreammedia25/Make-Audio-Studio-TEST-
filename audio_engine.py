@@ -132,48 +132,69 @@ def add_voice(api_key, name, audio_bytes):
         return {"success": False, "error": str(e)}
 
 def normalize_audio(audio_bytes, target_dBFS=-20.0):
-    """발화 구간 기준으로 볼륨을 정규화합니다. 무음 패딩이 RMS 측정을 왜곡하는 것을 방지합니다."""
-    from pydub import AudioSegment
-    import io
+    """ffmpeg loudnorm 필터를 사용하여 오디오 볼륨을 정규화합니다."""
+    import subprocess
+    import imageio_ffmpeg
+    import tempfile
+    import os
+
+    ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp_in:
+        tmp_in.write(audio_bytes)
+        tmp_in_path = tmp_in.name
+    tmp_out_path = tmp_in_path.replace(".mp3", "_norm.mp3")
     try:
-        segment = AudioSegment.from_file(io.BytesIO(audio_bytes), format="mp3")
-        # 무음 제거 후 발화 기준으로 RMS 측정 → gain은 원본 전체에 적용
-        stripped = segment.strip_silence(silence_len=100, silence_thresh=-55, padding=50)
-        ref = stripped if len(stripped) >= len(segment) * 0.15 else segment
-        if ref.dBFS <= -60:
-            return audio_bytes
-        change = target_dBFS - ref.dBFS
-        normalized = segment.apply_gain(change)
-        buf = io.BytesIO()
-        normalized.export(buf, format="mp3")
-        return buf.getvalue()
+        subprocess.run(
+            [ffmpeg_exe, "-y", "-i", tmp_in_path, "-filter:a", "loudnorm", "-vn", tmp_out_path],
+            check=True, capture_output=True
+        )
+        with open(tmp_out_path, "rb") as f:
+            return f.read()
     except Exception:
         return audio_bytes
+    finally:
+        if os.path.exists(tmp_in_path): os.unlink(tmp_in_path)
+        if os.path.exists(tmp_out_path): os.unlink(tmp_out_path)
 
 def merge_audio(audio_data_list, silence_between_ms=80):
-    """여러 MP3 바이트 데이터를 pydub으로 디코딩 후 병합합니다.
-    세그먼트 사이에 짧은 무음을 삽입하여 전환부 아티팩트를 방지합니다."""
-    from pydub import AudioSegment
-    import io
+    """ffmpeg concat demuxer로 여러 MP3를 병합합니다."""
+    import subprocess
+    import imageio_ffmpeg
+    import tempfile
+    import os
 
     if len(audio_data_list) == 1:
         return audio_data_list[0]
 
-    silence = AudioSegment.silent(duration=silence_between_ms)
-    combined = AudioSegment.empty()
-    for i, audio_bytes in enumerate(audio_data_list):
-        segment = AudioSegment.from_file(io.BytesIO(audio_bytes), format="mp3")
-        # 후미 무음만 제거 (마지막 500ms 범위, 매우 조용한 부분만 — 실제 음성은 건드리지 않음)
-        trimmed = segment.strip_silence(silence_len=200, silence_thresh=-60, padding=80)
-        # 트리밍 후 길이가 원본의 50% 이하면 너무 많이 잘린 것 → 원본 사용
-        segment = trimmed if len(trimmed) >= len(segment) * 0.5 else segment
-        if i > 0:
-            combined += silence
-        combined += segment
-
-    buf = io.BytesIO()
-    combined.export(buf, format="mp3", bitrate="192k")
-    return buf.getvalue()
+    ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+    tmp_files = []
+    list_path = None
+    tmp_out = None
+    try:
+        for audio_bytes in audio_data_list:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as f:
+                f.write(audio_bytes)
+                tmp_files.append(f.name)
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix=".txt") as lf:
+            list_path = lf.name
+            for path in tmp_files:
+                lf.write(f"file '{path}'\n")
+        tmp_out = list_path.replace(".txt", "_merged.mp3")
+        subprocess.run(
+            [ffmpeg_exe, "-y", "-f", "concat", "-safe", "0", "-i", list_path,
+             "-vn", "-b:a", "192k", tmp_out],
+            check=True, capture_output=True
+        )
+        with open(tmp_out, "rb") as f:
+            return f.read()
+    except Exception as e:
+        print(f"merge_audio error: {e}")
+        return b"".join(audio_data_list)
+    finally:
+        for f in tmp_files:
+            if os.path.exists(f): os.unlink(f)
+        if list_path and os.path.exists(list_path): os.unlink(list_path)
+        if tmp_out and os.path.exists(tmp_out): os.unlink(tmp_out)
 
 def isolate_audio(api_key, audio_bytes):
     """ElevenLabs Audio Isolation API를 사용하여 배경음악 및 노이즈를 제거합니다."""
@@ -261,15 +282,41 @@ def create_voice_from_design(api_key, voice_name, generated_voice_id, descriptio
         return {"success": False, "error": str(e)}
 
 def concat_audio(audio_bytes_list):
-    """여러 MP3 바이트를 처리 없이 단순 순서대로 연결합니다 (mBook 전체 병합용)."""
-    from pydub import AudioSegment
-    import io
-    combined = AudioSegment.empty()
-    for ab in audio_bytes_list:
-        combined += AudioSegment.from_file(io.BytesIO(ab), format="mp3")
-    buf = io.BytesIO()
-    combined.export(buf, format="mp3", bitrate="192k")
-    return buf.getvalue()
+    """여러 MP3 바이트를 순서대로 연결합니다 (mBook 전체 병합용)."""
+    import subprocess
+    import imageio_ffmpeg
+    import tempfile
+    import os
+
+    ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+    tmp_files = []
+    list_path = None
+    tmp_out = None
+    try:
+        for audio_bytes in audio_bytes_list:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as f:
+                f.write(audio_bytes)
+                tmp_files.append(f.name)
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix=".txt") as lf:
+            list_path = lf.name
+            for path in tmp_files:
+                lf.write(f"file '{path}'\n")
+        tmp_out = list_path.replace(".txt", "_concat.mp3")
+        subprocess.run(
+            [ffmpeg_exe, "-y", "-f", "concat", "-safe", "0", "-i", list_path,
+             "-vn", "-b:a", "192k", tmp_out],
+            check=True, capture_output=True
+        )
+        with open(tmp_out, "rb") as f:
+            return f.read()
+    except Exception as e:
+        print(f"concat_audio error: {e}")
+        return b"".join(audio_bytes_list)
+    finally:
+        for f in tmp_files:
+            if os.path.exists(f): os.unlink(f)
+        if list_path and os.path.exists(list_path): os.unlink(list_path)
+        if tmp_out and os.path.exists(tmp_out): os.unlink(tmp_out)
 
 def apply_speed_control(audio_bytes, speed):
     """ffmpeg의 atempo 필터를 사용하여 피치를 유지하며 오디오 속도를 조절합니다."""

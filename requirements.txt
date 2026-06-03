@@ -1,6 +1,5 @@
 streamlit
 elevenlabs
-pydub
 requests
 python-dotenv
 google-genai
