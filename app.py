@@ -493,6 +493,9 @@ with st.sidebar:
                         sub = audio_engine.get_subscription_info(clean_key)
                         if sub["success"]:
                             st.session_state.subscription_info = sub
+                        else:
+                            st.session_state.subscription_info = None
+                            st.warning(f"⚠️ 구독 정보를 불러올 수 없습니다: {sub.get('error', '알 수 없는 오류')} (텍스트 리밋/보이스 슬롯 현황이 표시되지 않을 수 있습니다.)")
                         st.success("✅ 인증 성공 및 목소리 목록 로드 완료!")
                         st.balloons()
         else:
@@ -518,6 +521,8 @@ with st.sidebar:
             char_limit = sub.get("character_limit", 0)
             if char_limit > 0:
                 st.caption(f"📝 이번 달 글자 수: {char_used:,} / {char_limit:,}")
+            else:
+                st.caption(f"📝 이번 달 글자 수: {char_used:,} (한도 정보 없음)")
 
     st.divider()
     st.subheader("Gemini 설정")
