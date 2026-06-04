@@ -69,6 +69,56 @@ def extract_script_metadata_via_gemini(api_key, script_text, model_name='models/
         return {"success": False, "error": f"Gemini 분석 중 오류: {str(e)}"}
 
 
+def annotate_segments_via_gemini(api_key, script_text, known_characters, model_name='models/gemini-1.5-flash'):
+    """
+    이미 알고 있는 캐릭터 목록을 바탕으로 세그먼트 화자/감정만 분석합니다. (병렬 처리용)
+    """
+    if not api_key:
+        return {"success": False, "error": "Gemini API 키가 입력되지 않았습니다."}
+    try:
+        client = genai.Client(api_key=api_key)
+        safe_script = script_text.replace('—', '-').replace('–', '-')
+        char_list = ", ".join(known_characters) if known_characters else "없음"
+
+        prompt = f"""당신은 동화 더빙 전문 에디터입니다. 다음 대본의 각 행을 분석하여 화자와 감정을 추출해주세요.
+
+**등장 캐릭터**: {char_list}
+
+**[중요 지침]**
+- 캐릭터 이름은 위 목록에 있는 이름을 그대로 사용하세요.
+- 대명사(he, she)는 문맥을 파악하여 반드시 실제 캐릭터 이름으로 변환하세요.
+- 한 행에 대사(따옴표)와 내레이션이 섞여 있다면 반드시 각각 개별 세그먼트로 분리하세요.
+  - 예: '"Me!" he says.' -> 'Me!' (Speaker: Milo), 'he says.' (Speaker: 내레이션)
+  - 예: 'The flower says, "My color helps bees."' -> 'The flower says,' (Speaker: 내레이션), 'My color helps bees.' (Speaker: Flower)
+- Mood 종류: "Neutral", "Happy", "Sad", "Angry", "Excited", "Whispering"
+
+반드시 아래 JSON 형식으로만 응답하세요:
+{{
+    "segments": [
+        {{ "text": "Segment text here", "speaker": "Character Name (or 내레이션)", "mood": "One of the above Moods" }}
+    ]
+}}
+
+대본 내용:
+{safe_script}
+"""
+        clean_model_id = model_name.replace("models/", "")
+        response = client.models.generate_content(model=clean_model_id, contents=prompt)
+        result_text = response.text.strip()
+        if "```json" in result_text:
+            m = re.search(r'```json\s*(.*?)\s*```', result_text, re.DOTALL)
+            if m:
+                result_text = m.group(1)
+        elif "```" in result_text:
+            m = re.search(r'```\s*(.*?)\s*```', result_text, re.DOTALL)
+            if m:
+                result_text = m.group(1)
+        data = json.loads(result_text)
+        return {"success": True, "segments_metadata": data.get('segments', [])}
+    except Exception as e:
+        return {"success": False, "error": f"Gemini 세그먼트 분석 중 오류: {str(e)}"}
+
+
 def generate_voice_description(api_key, char_name, char_info, char_lines=None, model_name='models/gemini-1.5-flash'):
     """
     캐릭터 정보와 실제 대사를 바탕으로 ElevenLabs Voice Design에 적합한 영문 설명문을 생성합니다.

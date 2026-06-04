@@ -16,6 +16,7 @@ import tempfile
 import os
 import io
 import traceback
+import concurrent.futures
 
 # 감정(Mood)별 ElevenLabs 파라미터 프리셋
 MOOD_PRESETS = {
@@ -625,55 +626,84 @@ if uploaded_scripts:
         elif not st.session_state.get('gemini_api_key'):
             st.error("좌측 사이드바에서 Gemini API Key를 입력하고 '적용' 버튼을 눌러주세요.")
         else:
-            all_characters_data = {} # {name: info_dict}
-            success_count = 0
-            with st.spinner(f"Gemini AI가 모든 난이도 대본을 분석 중입니다..."):
+            best_model = st.session_state.get('gemini_model', 'models/gemini-1.5-flash')
+            gemini_key = st.session_state.gemini_api_key
+
+            # Step 1: 모든 파일 읽기
+            dfs = {}
+            for diff, f in file_mapping.items():
                 try:
-                    for diff, f in file_mapping.items():
-                        if f.name.endswith('.csv'):
-                            df = pd.read_csv(f)
-                        else:
-                            df = pd.read_excel(f)
-                            
-                        required_cols = ['ID', 'Key', 'Text']
-                        missing = [c for c in required_cols if c not in df.columns]
-                        if missing:
-                            st.error(f"'{f.name}' 파일에 필수 컬럼이 없습니다: {', '.join(missing)}")
-                            continue
-                            
-                        script_text = "\n".join(df['Text'].dropna().astype(str).tolist())
-                        
-                        # AI 분석
-                        best_model = st.session_state.get('gemini_model', 'models/gemini-1.5-flash')
-                        res = llm_helper.extract_script_metadata_via_gemini(st.session_state.gemini_api_key, script_text, model_name=best_model)
-                        
-                        if res['success']:
-                            # 캐릭터 목록 합치기 (Gemini가 추출한 상세 정보 보존, 내레이션 제외)
-                            for c_name, c_info in res['characters'].items():
-                                if c_name not in all_characters_data and c_name.strip().lower() not in ('내레이션', 'narration', 'narrator'):
-                                    all_characters_data[c_name] = c_info
-                            
-                            # 대본 파싱
-                            parsed, _ = processor.parse_dataframe(df, res['characters'], ai_metadata=res['segments_metadata'])
-                            
-                            # 난이도별 저장
-                            st.session_state.parsed_data_dict[diff] = parsed
-                            st.session_state.voice_mappings_dict[diff] = {item['segment_id']: "" for item in parsed}
-                            st.session_state.script_parsed_dict[diff] = True
-                            success_count += 1
-                        else:
-                            st.error(f"[{diff}] 분석 실패: {res.get('error', '알 수 없는 오류')}")
-                            
-                    if success_count > 0:
-                        # 통합 캐릭터 리스트 업데이트
-                        st.session_state.characters = all_characters_data
-                        st.session_state.character_voice_mappings = {name: "" for name in st.session_state.characters}
-                        
-                        st.session_state.character_confirmed = False
-                        st.success(f"✅ {success_count}개 난이도 대본 분석 및 캐릭터 통합 완료!")
-                        st.rerun()
+                    if f.name.endswith('.csv'):
+                        df = pd.read_csv(f)
                     else:
-                        st.warning("분석에 성공한 파일이 없습니다. 설정을 확인해 주세요.")
+                        df = pd.read_excel(f)
+                    required_cols = ['ID', 'Key', 'Text']
+                    missing = [c for c in required_cols if c not in df.columns]
+                    if missing:
+                        st.error(f"'{f.name}' 파일에 필수 컬럼이 없습니다: {', '.join(missing)}")
+                        continue
+                    dfs[diff] = df
+                except Exception as e:
+                    st.error(f"'{f.name}' 파일 읽기 실패: {str(e)}")
+
+            if not dfs:
+                st.warning("분석할 파일이 없습니다.")
+            else:
+                try:
+                    # Step 2: 첫 번째 파일로 캐릭터 추출 (1회 풀 분석)
+                    first_diff = list(dfs.keys())[0]
+                    first_script = "\n".join(dfs[first_diff]['Text'].dropna().astype(str).tolist())
+                    with st.spinner("Gemini AI가 캐릭터를 분석 중입니다... (1단계)"):
+                        char_res = llm_helper.extract_script_metadata_via_gemini(gemini_key, first_script, model_name=best_model)
+
+                    if not char_res['success']:
+                        st.error(f"캐릭터 분석 실패: {char_res.get('error', '알 수 없는 오류')}")
+                    else:
+                        all_characters_data = {
+                            c_name: c_info for c_name, c_info in char_res['characters'].items()
+                            if c_name.strip().lower() not in ('내레이션', 'narration', 'narrator')
+                        }
+                        known_char_names = list(char_res['characters'].keys())
+                        segment_results = {first_diff: char_res}
+                        other_items = [(diff, df) for diff, df in dfs.items() if diff != first_diff]
+
+                        # Step 3: 나머지 파일 세그먼트 병렬 분석
+                        if other_items:
+                            def _annotate_task(item):
+                                diff, df = item
+                                script_text = "\n".join(df['Text'].dropna().astype(str).tolist())
+                                return diff, llm_helper.annotate_segments_via_gemini(
+                                    gemini_key, script_text, known_char_names, model_name=best_model
+                                )
+
+                            with st.spinner(f"Gemini AI가 나머지 {len(other_items)}개 대본을 병렬 분석 중입니다... (2단계)"):
+                                with concurrent.futures.ThreadPoolExecutor(max_workers=len(other_items)) as executor:
+                                    futures = {executor.submit(_annotate_task, item): item[0] for item in other_items}
+                                    for future in concurrent.futures.as_completed(futures):
+                                        diff, res = future.result()
+                                        segment_results[diff] = res
+
+                        # Step 4: 결과 저장
+                        success_count = 0
+                        for diff, df in dfs.items():
+                            res = segment_results.get(diff)
+                            if res and res['success']:
+                                parsed, _ = processor.parse_dataframe(df, char_res['characters'], ai_metadata=res['segments_metadata'])
+                                st.session_state.parsed_data_dict[diff] = parsed
+                                st.session_state.voice_mappings_dict[diff] = {item['segment_id']: "" for item in parsed}
+                                st.session_state.script_parsed_dict[diff] = True
+                                success_count += 1
+                            else:
+                                st.error(f"[{diff}] 세그먼트 분석 실패: {res.get('error', '알 수 없는 오류') if res else '결과 없음'}")
+
+                        if success_count > 0:
+                            st.session_state.characters = all_characters_data
+                            st.session_state.character_voice_mappings = {name: "" for name in all_characters_data}
+                            st.session_state.character_confirmed = False
+                            st.success(f"✅ {success_count}개 난이도 대본 분석 및 캐릭터 통합 완료!")
+                            st.rerun()
+                        else:
+                            st.warning("분석에 성공한 파일이 없습니다. 설정을 확인해 주세요.")
                 except Exception as e:
                     error_trace = traceback.format_exc()
                     st.error(f"처리 중 오류 발생: {str(e)}")
