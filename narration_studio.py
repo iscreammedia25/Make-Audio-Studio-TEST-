@@ -19,6 +19,20 @@ SPEED_OPTIONS = [0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 1.0, 1.05, 1.1, 1.15, 1.2, 1.2
 
 _NARRATION_NAMES = {"내레이션", "narration", "narrator", "나레이터"}
 
+# 'Judy said.' / 'he replied.' 같은 발화 귀속 문구를 감지하는 동사 목록
+_SPEECH_VERBS = re.compile(
+    r'\b(said|says|asked|asks|replied|answered|whispered|whispers|'
+    r'shouted|shouts|exclaimed|exclaims|cried|added|muttered|mumbled|'
+    r'called|stated|declared|announced|continued|thought|sighed|begged|'
+    r'groaned|cheered|commanded|ordered|assured|told|insisted|began|went)\b',
+    re.IGNORECASE,
+)
+
+
+def _is_attribution(text: str) -> bool:
+    """'Judy said.' 처럼 6단어 이하이면서 발화 동사가 있는 귀속 문구인지 확인."""
+    return len(text.strip().split()) <= 6 and bool(_SPEECH_VERBS.search(text))
+
 
 def _init():
     defaults = {
@@ -366,8 +380,8 @@ def _analyze_segment(sid: int):
             "mood":    seg.get("mood", "Neutral"),
         })
 
-    # Gemini가 혼합 문장을 분리 안 했을 때 클라이언트 측에서 추가 분리
-    parts = _split_mixed_parts(raw_parts)
+    # 귀속 문구('Judy said.' 등) 나레이션 파트 제거 후 혼합 분리
+    parts = _split_mixed_parts(_merge_attribution_narration(raw_parts))
 
     # 새 캐릭터가 있으면 성우 목록에 자동 추가
     speakers = st.session_state.narr_speakers
@@ -453,14 +467,33 @@ def _generate_segment(sid: int):
     return None
 
 
+def _merge_attribution_narration(parts: list) -> list:
+    """나레이션 파트가 'Judy said.' 같은 귀속 문구뿐이면 제거해 단일 대사로 만든다."""
+    if len(parts) <= 1:
+        return parts
+    filtered = [p for p in parts
+                if not (p["type"] == "내레이션" and _is_attribution(p["text"]))]
+    return filtered if filtered else parts
+
+
 def _split_mixed_parts(parts: list) -> list:
-    """Gemini가 혼합 문장을 분리 안 했을 때 따옴표 기준으로 클라이언트 측 추가 분리."""
+    """Gemini가 혼합 문장을 분리 안 했을 때 따옴표 기준으로 클라이언트 측 추가 분리.
+    단, 비인용 부분이 모두 귀속 문구면 분리하지 않는다."""
     result = []
     for part in parts:
         subs = [p.strip() for p in re.split(r'("[^"]*"|\'[^\']*\')', part["text"]) if p.strip()]
         if len(subs) <= 1:
             result.append(part)
             continue
+
+        non_quoted = [s for s in subs
+                      if not ((s.startswith('"') and s.endswith('"')) or
+                              (s.startswith("'") and s.endswith("'")))]
+        # 비인용 부분이 전부 귀속 문구면 한 문장 취급
+        if all(_is_attribution(s) for s in non_quoted):
+            result.append(part)
+            continue
+
         for sub in subs:
             is_quoted = (
                 (sub.startswith('"') and sub.endswith('"')) or
