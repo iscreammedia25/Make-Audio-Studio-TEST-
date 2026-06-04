@@ -1,3 +1,4 @@
+import re
 import time
 
 import pandas as pd
@@ -340,6 +341,8 @@ def _analyze(script_text: str):
                 "text": text, "mood": seg.get("mood", "Neutral"),
                 "scene": "N_SC01", "line": f"ST{i+1:03d}",
             })
+        # Gemini가 혼합 문장을 분리 안 했을 때를 대비한 클라이언트 사이드 후처리
+        parsed = _split_mixed_segments(parsed)
     else:
         # Gemini 세그먼트 없을 때 fallback
         lines = [ln.strip() for ln in script_text.splitlines() if ln.strip()]
@@ -431,6 +434,33 @@ def _generate_all(parsed: list):
         st.success("✅ 음원 생성 완료!")
         st.balloons()
     st.rerun()
+
+
+def _split_mixed_segments(parsed: list) -> list:
+    """Gemini가 따옴표 대사+나레이션 혼합 문장을 하나의 세그먼트로 반환할 때 클라이언트 측에서 분리."""
+    result = []
+    for item in parsed:
+        text = item["text"]
+        # 쌍 따옴표 기준으로 분리 — 구분자(인용문)도 캡처
+        parts = [p.strip() for p in re.split(r'("[^"]*"|\'[^\']*\')', text) if p.strip()]
+        if len(parts) <= 1:
+            result.append(item)
+            continue
+        for j, part in enumerate(parts):
+            is_quoted = (
+                (part.startswith('"') and part.endswith('"')) or
+                (part.startswith("'") and part.endswith("'"))
+            )
+            new_item = dict(item)
+            new_item["text"] = part
+            new_item["segment_id"] = f"{item['segment_id']}s{j}"
+            if is_quoted:
+                new_item["type"] = "대사"
+            else:
+                new_item["type"] = "내레이션"
+                new_item["character"] = "내레이션"
+            result.append(new_item)
+    return result
 
 
 def _reset():
