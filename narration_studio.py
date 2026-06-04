@@ -310,17 +310,45 @@ def _analyze(script_text: str):
         st.error(f"분석 실패: {result.get('error', '알 수 없는 오류')}")
         return
 
-    # 텍스트를 줄 단위로 나눠 DataFrame 생성 (processor.parse_dataframe 포맷에 맞춤)
-    lines = [ln.strip() for ln in script_text.split("\n") if ln.strip()]
-    df = pd.DataFrame({
-        "ID":  "NARR01",
-        "Key": [f"SC01_ST{i+1:03d}" for i in range(len(lines))],
-        "Text": lines,
-    })
+    # Gemini가 "Narrator"/"narration" 등 영문으로 반환할 수 있으므로 "내레이션"으로 정규화
+    segments_meta = result.get("segments_metadata") or []
+    for seg in segments_meta:
+        if isinstance(seg, dict):
+            sp = seg.get("speaker", "")
+            if isinstance(sp, str) and sp.strip().lower() in _NARRATION_NAMES:
+                seg["speaker"] = "내레이션"
 
-    parsed, _ = processor.parse_dataframe(
-        df, result["characters"], ai_metadata=result.get("segments_metadata")
-    )
+    if segments_meta:
+        # Gemini가 이미 대사/내레이션을 분리한 세그먼트를 반환하므로 직접 사용.
+        # parse_dataframe의 fuzzy 텍스트 매칭을 거치면 혼합 문장에서 오인식 발생.
+        parsed = []
+        for i, seg in enumerate(segments_meta):
+            if not isinstance(seg, dict):
+                continue
+            text = seg.get("text", "").strip()
+            if not text:
+                continue
+            sp = seg.get("speaker", "내레이션")
+            seg_type = "내레이션" if sp == "내레이션" else "대사"
+            char_label = "내레이션" if seg_type == "내레이션" else sp
+            parsed.append({
+                "ID": "NARR01", "Key": f"SC01_ST{i+1:03d}",
+                "book_id": "NARR01", "audio_type": "N",
+                "scene_num": "SC01", "seq_num": f"ST{i+1:03d}",
+                "seg_idx": 0, "segment_id": f"SC01_ST{i+1:03d}_0",
+                "type": seg_type, "character": char_label,
+                "text": text, "mood": seg.get("mood", "Neutral"),
+                "scene": "N_SC01", "line": f"ST{i+1:03d}",
+            })
+    else:
+        # Gemini 세그먼트 없을 때 fallback
+        lines = [ln.strip() for ln in script_text.splitlines() if ln.strip()]
+        df = pd.DataFrame({
+            "ID": "NARR01",
+            "Key": [f"SC01_ST{i+1:03d}" for i in range(len(lines))],
+            "Text": lines,
+        })
+        parsed, _ = processor.parse_dataframe(df, result["characters"])
 
     all_chars = {
         name: info
