@@ -106,34 +106,7 @@ def voice_selector_ui(key_label, current_voice_id, voices_dict, container_key,
 
                 desc_key = f"d_desc_area_{container_key}"
                 if desc_key not in st.session_state:
-                    _g_map = {"남성": "male", "여성": "female", "중성": "neutral"}
-                    _a_map = {"아동": "child", "청소년": "teenage", "성인": "adult",
-                              "노인": "elderly", "아이": "child"}
-                    _t_map = {
-                        "차분한": "calm and composed", "장난기있는": "playful and mischievous",
-                        "활발한": "energetic and lively", "따뜻한": "warm and nurturing",
-                        "씩씩한": "brave and bold", "부드러운": "gentle and soft",
-                        "밝은": "bright and cheerful", "어두운": "somber and serious",
-                        "신중한": "thoughtful and measured", "엄격한": "stern and authoritative",
-                        "재미있는": "fun and humorous", "귀여운": "sweet and endearing",
-                        "용감한": "courageous and strong", "지혜로운": "wise and knowing",
-                        "명랑한": "cheerful and upbeat", "슬픈": "melancholic and gentle",
-                        "보통": "natural and conversational",
-                    }
-                    if char_info:
-                        g = _g_map.get(char_info.get('gender', ''), 'neutral')
-                        a = _a_map.get(char_info.get('age', ''), 'adult')
-                        t_raw = char_info.get('tone', '보통')
-                        t = _t_map.get(t_raw, t_raw if t_raw.isascii() else 'natural and conversational')
-                        st.session_state[desc_key] = (
-                            f"A {t} {g} {a} voice, warm and clear, "
-                            f"suitable for a children's storybook."
-                        )
-                    else:
-                        st.session_state[desc_key] = (
-                            "A warm, clear adult voice with a gentle and natural tone, "
-                            "suitable for a children's storybook narrator."
-                        )
+                    st.session_state[desc_key] = ""
 
                 gemini_available = bool(st.session_state.get('gemini_api_key'))
                 if gemini_available:
