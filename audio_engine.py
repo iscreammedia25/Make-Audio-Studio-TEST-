@@ -279,7 +279,10 @@ def create_voice_from_design(api_key, voice_name, generated_voice_id, descriptio
         response.raise_for_status()
         return {"success": True, "voice_id": response.json().get("voice_id")}
     except Exception as e:
-        return {"success": False, "error": str(e)}
+        error_msg = str(e)
+        if hasattr(e, 'response') and e.response is not None:
+            error_msg += f" - {e.response.text}"
+        return {"success": False, "error": error_msg}
 
 def concat_audio(audio_bytes_list):
     """여러 MP3 바이트를 순서대로 연결합니다 (mBook 전체 병합용)."""

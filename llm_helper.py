@@ -154,38 +154,52 @@ def generate_voice_description(api_key, char_name, char_info, char_lines=None, m
         if char_lines:
             sample_lines = "\n".join(f'  - "{line}"' for line in char_lines[:5])
 
-        prompt = f"""You are an expert voice director crafting prompts for the ElevenLabs Voice Design AI system.
-Your task is to write a vivid, specific English voice description for a children's audiobook character.
+        prompt = f"""You are an expert voice director writing prompts for ElevenLabs Voice Design AI.
+Write a rich, story-specific voice description for a children's audiobook character.
 
-ElevenLabs Voice Design responds best to descriptions that specify:
-- Approximate age and gender
-- Accent (e.g. American, British, neutral)
-- Pitch and pace (e.g. slightly higher pitched, slow and deliberate)
-- Emotional quality and energy level
-- A relatable real-world comparison (e.g. "like a kindergarten teacher", "like an adventurous young explorer")
+STRICT RULES:
+1. Accent MUST be clear American English — never Indian, British, Australian, or any other.
+2. Always include "clear American English" in the description.
+3. Output ONLY the description — no labels, headers, or explanation.
+4. Write exactly 4 sentences, each serving a specific purpose (see structure below).
 
-Good example descriptions:
-- "A warm, nurturing woman in her late 30s with a soft American accent. She speaks at a calm, gentle pace with natural emotional warmth, like a mother reading a bedtime story to her child."
-- "A bright, energetic boy around 7 years old. His voice is clear and slightly high-pitched, bubbling with curiosity and excitement. Fast-paced with playful emphasis, like a kid describing his favorite adventure."
-- "A wise elderly man in his 70s with a deep, resonant voice. He speaks slowly and deliberately with a warm American accent, like a grandfather sharing an important lesson."
+REQUIRED 4-SENTENCE STRUCTURE:
+  Sentence 1 — Character intro + 3 core voice adjectives:
+    "Create a [adj], [adj], and [adj] [gender] voice for a children's storybook character named {char_name}."
+  Sentence 2 — Voice qualities + real-world or animation character comparison:
+    "The voice should sound like [comparison]: [specific technical qualities — pitch, pace, clarity, energy, emotional tone], with a clear American English accent."
+  Sentence 3 — Personality → speaking style (draw directly from the dialogue lines if available):
+    "{char_name} is [personality traits]. [He/She] speaks [how], as if [specific scenario that captures the character's essence]."
+  Sentence 4 — Negative constraints + final quality goal:
+    "Avoid [2–3 things to avoid based on this character]. Keep the voice [2–3 positive qualities] and easy for young children to understand."
 
-Now write ONE description for this character. Output ONLY the description in English — no labels, no preamble, no explanation.
+REFERENCE EXAMPLE (Ruby, a rabbit character):
+  "Create a warm, cheerful, and gentle female rabbit voice for a children's storybook character named Ruby.
+  The voice should sound like a friendly children's animation character: light and soft, with clear pronunciation, gentle energy, and a comforting emotional tone, with a clear American English accent.
+  Ruby is kind, helpful, and encouraging. She speaks in a bright and supportive way, as if she is happily offering help to a friend.
+  Avoid sounding too adult, dramatic, or overly energetic. Keep the voice sweet, natural, and easy for young children to understand."
 
-Character: {char_name}
+Now write the description for this character:
+
+Character name: {char_name}
 Gender: {g}
 Age: {a}
 Personality: {t}
-Additional context: {char_desc if char_desc else "A character in a children's storybook."}
-Sample dialogue lines:
+Character context: {char_desc if char_desc else "A character in a children's storybook."}
+Sample dialogue lines (use these to capture how the character actually speaks):
 {sample_lines if sample_lines else "  (none available)"}"""
 
         clean_model_id = model_name.replace("models/", "")
         response = client.models.generate_content(model=clean_model_id, contents=prompt)
         result = response.text.strip()
-        # 혹시 한국어가 섞인 경우 재시도 방어 (간단 체크)
+        # 한국어 포함 방어
         korean_chars = sum(1 for c in result if '가' <= c <= '힣')
         if korean_chars > 3:
             return {"success": False, "error": "생성된 설명에 한국어가 포함되어 있습니다. 다시 시도해 주세요."}
+        # American English 표현이 빠진 경우 마지막 문장 앞에 삽입
+        american_keywords = ["american", "american english", "american accent"]
+        if not any(kw in result.lower() for kw in american_keywords):
+            result = result.rstrip(".") + ", with a clear American English accent."
         return {"success": True, "description": result}
     except Exception as e:
         return {"success": False, "error": str(e)}

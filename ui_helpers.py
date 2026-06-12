@@ -165,15 +165,17 @@ def voice_selector_ui(key_label, current_voice_id, voices_dict, container_key,
                 )
                 voice_desc_input = st.session_state[desc_key]
 
+                _FALLBACK_TEXT = (
+                    "Hello! I'm so happy to meet you. "
+                    "Let's go on an adventure together through the magical forest! "
+                    "Every day brings a new and wonderful surprise."
+                )
                 if char_lines_for_ai:
-                    sample_text = " ".join(char_lines_for_ai[:3])
+                    sample_text = " ".join(char_lines_for_ai)
                     if len(sample_text) < 100:
-                        sample_text += " " + " ".join(char_lines_for_ai[:2])
+                        sample_text += " " + _FALLBACK_TEXT
                 else:
-                    sample_text = (
-                        "Hello! I'm so happy to meet you. "
-                        "Let's go on an adventure together through the magical forest!"
-                    )
+                    sample_text = _FALLBACK_TEXT
 
                 if st.button("🎲 샘플 생성 및 재생성",
                              key=f"d_gen_btn_{container_key}",

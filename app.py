@@ -18,6 +18,131 @@ import os
 import io
 import traceback
 import concurrent.futures
+from dotenv import load_dotenv, set_key, find_dotenv
+import time
+import uuid
+import shutil
+
+_DOTENV_PATH = os.path.join(os.path.dirname(__file__), ".env")
+_SESSIONS_ROOT = os.path.join(os.path.dirname(__file__), ".sessions")
+_SESSION_BACKUP_MAX_AGE = 48 * 3600   # 48시간
+_SESSION_CLEANUP_AGE   = 7 * 86400    # 7일 지난 세션 폴더 자동 삭제
+_PERSISTENT_KEYS = [
+    "parsed_data_dict", "voice_mappings_dict", "script_parsed_dict",
+    "characters", "character_voice_mappings", "character_confirmed",
+    "speed_settings",
+]
+
+def _save_key_to_env(var_name: str, value: str):
+    if not os.path.exists(_DOTENV_PATH):
+        open(_DOTENV_PATH, "a").close()
+    set_key(_DOTENV_PATH, var_name, value)
+
+def _session_token() -> str:
+    """URL query param ?t= 에서 토큰을 읽거나 없으면 새로 생성."""
+    token = st.query_params.get("t")
+    if not token:
+        token = uuid.uuid4().hex[:12]
+        st.query_params["t"] = token
+    return token
+
+def _session_dir() -> str:
+    return os.path.join(_SESSIONS_ROOT, _session_token())
+
+def _backup_path() -> str:
+    return os.path.join(_session_dir(), "backup.json")
+
+def _audio_dir() -> str:
+    return os.path.join(_session_dir(), "audio")
+
+def _cleanup_old_sessions():
+    """7일 이상 된 세션 폴더를 조용히 삭제."""
+    if not os.path.isdir(_SESSIONS_ROOT):
+        return
+    cutoff = time.time() - _SESSION_CLEANUP_AGE
+    for name in os.listdir(_SESSIONS_ROOT):
+        folder = os.path.join(_SESSIONS_ROOT, name)
+        backup = os.path.join(folder, "backup.json")
+        try:
+            mtime = os.path.getmtime(backup) if os.path.exists(backup) else os.path.getmtime(folder)
+            if mtime < cutoff:
+                shutil.rmtree(folder, ignore_errors=True)
+        except Exception:
+            pass
+
+def _autosave():
+    """중요 세션 상태와 오디오 캐시를 사용자별 폴더에 저장."""
+    if not any(st.session_state.get("script_parsed_dict", {}).values()):
+        return
+    last_save = st.session_state.get("_last_autosave", 0)
+    if time.time() - last_save < 10:
+        return
+    sdir = _session_dir()
+    os.makedirs(sdir, exist_ok=True)
+    # 세션 상태 JSON 저장
+    state = {k: st.session_state.get(k) for k in _PERSISTENT_KEYS}
+    state["_saved_at"] = time.time()
+    try:
+        with open(_backup_path(), "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False)
+    except Exception:
+        pass
+    # 오디오 캐시 저장 (이미 있는 파일은 skip)
+    for diff, cache in st.session_state.get("audio_cache_dict", {}).items():
+        if not cache:
+            continue
+        diff_dir = os.path.join(_audio_dir(), diff)
+        os.makedirs(diff_dir, exist_ok=True)
+        for line_key, audio_bytes in cache.items():
+            if not isinstance(audio_bytes, bytes):
+                continue
+            safe_key = line_key.replace("/", "_").replace("\\", "_")
+            fpath = os.path.join(diff_dir, f"{safe_key}.mp3")
+            if not os.path.exists(fpath):
+                try:
+                    with open(fpath, "wb") as f:
+                        f.write(audio_bytes)
+                except Exception:
+                    pass
+    st.session_state["_last_autosave"] = time.time()
+
+def _autorestore():
+    """앱 시작 시 해당 사용자의 최근 백업이 있으면 자동 복원."""
+    if any(st.session_state.get("script_parsed_dict", {}).values()):
+        return
+    bp = _backup_path()
+    if not os.path.exists(bp):
+        return
+    try:
+        with open(bp, "r", encoding="utf-8") as f:
+            saved = json.load(f)
+        if time.time() - saved.get("_saved_at", 0) > _SESSION_BACKUP_MAX_AGE:
+            return
+        for k in _PERSISTENT_KEYS:
+            if k in saved and saved[k] is not None:
+                st.session_state[k] = saved[k]
+        # 오디오 캐시 복원
+        adir = _audio_dir()
+        if os.path.isdir(adir):
+            audio_cache = {d: {} for d in ["Normal", "Easy", "Difficult", "mBook"]}
+            for diff in audio_cache:
+                diff_dir = os.path.join(adir, diff)
+                if not os.path.isdir(diff_dir):
+                    continue
+                for fname in os.listdir(diff_dir):
+                    if not fname.endswith(".mp3"):
+                        continue
+                    try:
+                        with open(os.path.join(diff_dir, fname), "rb") as f:
+                            audio_cache[diff][fname[:-4]] = f.read()
+                    except Exception:
+                        pass
+            st.session_state["audio_cache_dict"] = audio_cache
+        st.session_state["_restored_from_backup"] = True
+    except Exception:
+        pass
+
+load_dotenv(_DOTENV_PATH)
 
 # 감정(Mood)별 ElevenLabs 파라미터 프리셋
 MOOD_PRESETS = {
@@ -32,11 +157,11 @@ MOOD_PRESETS = {
 # 페이지 설정
 st.set_page_config(page_title="동화 대본 자동 더빙 에이전트", layout="wide")
 
-# 세션 상태 초기화
+# 세션 상태 초기화 (저장된 키가 있으면 .env에서 자동 로드)
 if 'api_key' not in st.session_state:
-    st.session_state.api_key = ""
+    st.session_state.api_key = os.environ.get("ELEVENLABS_API_KEY", "")
 if 'gemini_api_key' not in st.session_state:
-    st.session_state.gemini_api_key = ""
+    st.session_state.gemini_api_key = os.environ.get("GEMINI_API_KEY", "")
 if 'voices' not in st.session_state:
     st.session_state.voices = {}
 if 'subscription_info' not in st.session_state:
@@ -87,14 +212,24 @@ def reset_all_state():
     st.session_state.characters = {}
     st.session_state.character_voice_mappings = {}
     st.session_state.character_confirmed = False
-    # 디자인/클로닝 관련 상태 초기화
-    st.session_state.design_previews = {} # {char_name: {"audio": bytes, "id": str}}
-    st.session_state.clone_previews = {}  # {char_name: bytes}
+    st.session_state.design_previews = {}
+    st.session_state.clone_previews = {}
+    # 이 사용자의 세션 폴더 전체 삭제 → 다음 시작 시 복원 안 됨
+    try:
+        shutil.rmtree(_session_dir(), ignore_errors=True)
+    except Exception:
+        pass
 
 if 'design_previews' not in st.session_state:
     st.session_state.design_previews = {}
 if 'clone_previews' not in st.session_state:
     st.session_state.clone_previews = {}
+
+# 세션이 새로 시작됐을 때 자동 복원 + 오래된 세션 정리
+if '_session_initialized' not in st.session_state:
+    _cleanup_old_sessions()
+    _autorestore()
+    st.session_state['_session_initialized'] = True
 
 
 @st.fragment
@@ -235,6 +370,7 @@ with st.sidebar:
         if api_key_input:
             clean_key = api_key_input.strip()
             st.session_state.api_key = clean_key
+            _save_key_to_env("ELEVENLABS_API_KEY", clean_key)
             with st.spinner("연결 테스트 중..."):
                 check_result = audio_engine.check_api_key(clean_key)
                 if not check_result["success"]:
@@ -289,6 +425,7 @@ with st.sidebar:
         if gemini_key_input:
             clean_gemini_key = gemini_key_input.strip()
             st.session_state.gemini_api_key = clean_gemini_key
+            _save_key_to_env("GEMINI_API_KEY", clean_gemini_key)
             with st.spinner("Gemini 연결 확인 중..."):
                 try:
                     from google import genai
@@ -338,6 +475,13 @@ with st.sidebar:
     difficulty_suffix = {"Normal": "N_A", "Easy": "E_A", "Difficult": "D_A", "mBook": "A"}.get(current_view_diff, "N_A")
     story_no = "" # UI에서 제거됨
 
+    # 세션 복원 알림
+    if st.session_state.pop("_restored_from_backup", False):
+        st.success("이전 작업이 자동 복원되었습니다.", icon="✅")
+
+
+# 매 렌더마다 자동 저장 (파싱된 데이터가 있을 때만)
+_autosave()
 
 _tab_dub, _tab_narr = st.tabs(['🎙️ 대본 더빙', '🎬 나레이션 스튜디오'])
 
