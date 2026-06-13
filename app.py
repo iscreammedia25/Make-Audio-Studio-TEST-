@@ -218,6 +218,8 @@ if 'cloned_voice_bytes' not in st.session_state:
     st.session_state.cloned_voice_bytes = None
 if 'last_uploaded_files' not in st.session_state:
     st.session_state.last_uploaded_files = []
+if 'uploader_key' not in st.session_state:
+    st.session_state.uploader_key = 0
 if 'script_parsed_dict' not in st.session_state:
     st.session_state.script_parsed_dict = {d: False for d in DIFFICULTIES}
 
@@ -237,6 +239,8 @@ def reset_all_state():
     st.session_state.generation_errors = []
     st.session_state.generation_skipped = []
     st.session_state.zip_cache = {}
+    st.session_state.last_uploaded_files = []
+    st.session_state.uploader_key = st.session_state.get('uploader_key', 0) + 1
     # 오디오 lazy load 플래그 초기화
     for _d in DIFFICULTIES:
         st.session_state.pop(f"_audio_loaded_{_d}", None)
@@ -596,7 +600,7 @@ with _tab_dub:
     st.divider()
     st.header("Step 1: 대본 파일 업로드 및 AI 분석")
     import pandas as pd
-    uploaded_scripts = st.file_uploader("대본 파일 업로드 (CSV 또는 Excel) - 최대 4개", type=['csv', 'xlsx', 'xls'], key="script_uploader", accept_multiple_files=True)
+    uploaded_scripts = st.file_uploader("대본 파일 업로드 (CSV 또는 Excel) - 최대 4개", type=['csv', 'xlsx', 'xls'], key=f"script_uploader_{st.session_state.uploader_key}", accept_multiple_files=True)
 
     if uploaded_scripts:
         # 파일명 기반 자동 매핑 및 수동 조정 UI (Normal > Easy > Difficult > mBook 고정 순서)
