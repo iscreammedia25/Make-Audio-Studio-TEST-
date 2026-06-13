@@ -85,7 +85,7 @@ def _cleanup_old_sessions():
             pass
 
 def _autosave():
-    """중요 세션 상태와 오디오 캐시를 사용자별 폴더에 저장."""
+    """중요 세션 상태를 JSON에 저장. 오디오는 _save_audio_now()가 생성 즉시 처리."""
     if not any(st.session_state.get("script_parsed_dict", {}).values()):
         return
     last_save = st.session_state.get("_last_autosave", 0)
@@ -93,35 +93,18 @@ def _autosave():
         return
     sdir = _session_dir()
     os.makedirs(sdir, exist_ok=True)
-    # 세션 상태 JSON 저장
     state = {k: st.session_state.get(k) for k in _PERSISTENT_KEYS}
     state["_saved_at"] = time.time()
     try:
         with open(_backup_path(), "w", encoding="utf-8") as f:
             json.dump(state, f, ensure_ascii=False)
+        st.session_state["_last_autosave"] = time.time()
     except Exception:
         pass
-    # 오디오 캐시 저장 (이미 있는 파일은 skip)
-    for diff, cache in st.session_state.get("audio_cache_dict", {}).items():
-        if not cache:
-            continue
-        diff_dir = os.path.join(_audio_dir(), diff)
-        os.makedirs(diff_dir, exist_ok=True)
-        for line_key, audio_bytes in cache.items():
-            if not isinstance(audio_bytes, bytes):
-                continue
-            safe_key = line_key.replace("/", "_").replace("\\", "_")
-            fpath = os.path.join(diff_dir, f"{safe_key}.mp3")
-            if not os.path.exists(fpath):
-                try:
-                    with open(fpath, "wb") as f:
-                        f.write(audio_bytes)
-                except Exception:
-                    pass
-    st.session_state["_last_autosave"] = time.time()
 
 def _autorestore():
-    """앱 시작 시 해당 사용자의 최근 백업이 있으면 자동 복원."""
+    """앱 시작 시 해당 사용자의 최근 백업이 있으면 자동 복원.
+    오디오는 session_state에 올리지 않고 난이도 선택 시 lazy load."""
     if any(st.session_state.get("script_parsed_dict", {}).values()):
         return
     bp = _backup_path()
@@ -135,26 +118,33 @@ def _autorestore():
         for k in _PERSISTENT_KEYS:
             if k in saved and saved[k] is not None:
                 st.session_state[k] = saved[k]
-        # 오디오 캐시 복원
-        adir = _audio_dir()
-        if os.path.isdir(adir):
-            audio_cache = {d: {} for d in ["Normal", "Easy", "Difficult", "mBook"]}
-            for diff in audio_cache:
-                diff_dir = os.path.join(adir, diff)
-                if not os.path.isdir(diff_dir):
-                    continue
-                for fname in os.listdir(diff_dir):
-                    if not fname.endswith(".mp3"):
-                        continue
-                    try:
-                        with open(os.path.join(diff_dir, fname), "rb") as f:
-                            audio_cache[diff][fname[:-4]] = f.read()
-                    except Exception:
-                        pass
-            st.session_state["audio_cache_dict"] = audio_cache
         st.session_state["_restored_from_backup"] = True
     except Exception:
         pass
+
+def _load_audio_for_diff(diff: str):
+    """선택한 난이도의 오디오만 디스크에서 읽어 session_state에 올림 (lazy load)."""
+    if st.session_state.get(f"_audio_loaded_{diff}"):
+        return
+    diff_dir = os.path.join(_audio_dir(), diff)
+    if not os.path.isdir(diff_dir):
+        st.session_state[f"_audio_loaded_{diff}"] = True
+        return
+    cache = st.session_state.get("audio_cache_dict", {})
+    diff_cache = cache.get(diff, {})
+    for fname in os.listdir(diff_dir):
+        if not fname.endswith(".mp3"):
+            continue
+        line_key = fname[:-4]
+        if line_key not in diff_cache:
+            try:
+                with open(os.path.join(diff_dir, fname), "rb") as f:
+                    diff_cache[line_key] = f.read()
+            except Exception:
+                pass
+    cache[diff] = diff_cache
+    st.session_state["audio_cache_dict"] = cache
+    st.session_state[f"_audio_loaded_{diff}"] = True
 
 load_dotenv(_DOTENV_PATH)
 
@@ -228,6 +218,9 @@ def reset_all_state():
     st.session_state.character_confirmed = False
     st.session_state.design_previews = {}
     st.session_state.clone_previews = {}
+    # 오디오 lazy load 플래그 초기화
+    for _d in DIFFICULTIES:
+        st.session_state.pop(f"_audio_loaded_{_d}", None)
     # 이 사용자의 세션 폴더 전체 삭제 → 다음 시작 시 복원 안 됨
     try:
         shutil.rmtree(_session_dir(), ignore_errors=True)
@@ -309,10 +302,10 @@ def audio_player_display(current_view_diff: str, difficulty_suffix: str):
                                         current_speed = st.session_state.speed_settings.get(char_name, 1.0)
                                         if current_speed != 1.0:
                                             audio_bytes = audio_engine.apply_speed_control(audio_bytes, current_speed)
-                                        audio_bytes = audio_engine.normalize_audio(audio_bytes)
                                         regen_audios.append(audio_bytes)
                             if regen_audios:
                                 merged = audio_engine.merge_audio(regen_audios)
+                                merged = audio_engine.normalize_audio(merged)
                                 st.session_state.audio_cache_dict[current_view_diff][line_key] = merged
                                 _save_audio_now(current_view_diff, line_key, merged)
                                 st.session_state.merged_scene_cache[current_view_diff] = {}
@@ -489,6 +482,7 @@ with st.sidebar:
     # 사이드바의 난이도는 "현재 뷰어에서 볼 난이도"를 결정함
     current_view_diff = st.radio("필요한 음원 선택", DIFFICULTIES)
     difficulty_suffix = {"Normal": "N_A", "Easy": "E_A", "Difficult": "D_A", "mBook": "A"}.get(current_view_diff, "N_A")
+    _load_audio_for_diff(current_view_diff)
     story_no = "" # UI에서 제거됨
 
     # 세션 복원 알림
@@ -1015,7 +1009,6 @@ with _tab_dub:
                             spd = st.session_state.speed_settings.get(seg.get('character', '내레이션'), 1.0)
                             if spd != 1.0:
                                 audio_bytes = audio_engine.apply_speed_control(audio_bytes, spd)
-                            audio_bytes = audio_engine.normalize_audio(audio_bytes)
                             segment_audios.append(audio_bytes)
                         elif isinstance(audio_bytes, dict) and 'error' in audio_bytes:
                             err_msg = audio_bytes['error']
@@ -1028,6 +1021,7 @@ with _tab_dub:
 
                     if segment_audios:
                         merged = audio_engine.merge_audio(segment_audios)
+                        merged = audio_engine.normalize_audio(merged)
                         st.session_state.audio_cache_dict[d][line_key] = merged
                         _save_audio_now(d, line_key, merged)
 
