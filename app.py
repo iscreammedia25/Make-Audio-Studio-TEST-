@@ -30,7 +30,7 @@ _SESSION_CLEANUP_AGE   = 7 * 86400    # 7일 지난 세션 폴더 자동 삭제
 _PERSISTENT_KEYS = [
     "parsed_data_dict", "voice_mappings_dict", "script_parsed_dict",
     "characters", "character_voice_mappings", "character_confirmed",
-    "speed_settings", "all_narration_voice_id",
+    "speed_settings", "all_narration_voice_id", "voices",
 ]
 
 def _save_key_to_env(var_name: str, value: str):
