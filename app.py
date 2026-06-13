@@ -255,6 +255,16 @@ if 'clone_previews' not in st.session_state:
 if '_session_initialized' not in st.session_state:
     _cleanup_old_sessions()
     _autorestore()
+    # .env에 키가 있으면 버튼 없이 자동 적용
+    if st.session_state.api_key and not st.session_state.voices:
+        _auto_voices = audio_engine.get_voices(st.session_state.api_key)
+        if isinstance(_auto_voices, dict) and "error" not in _auto_voices:
+            st.session_state.voices = _auto_voices
+            _sub = audio_engine.get_subscription_info(st.session_state.api_key)
+            if _sub.get("success"):
+                st.session_state.subscription_info = _sub
+    if st.session_state.gemini_api_key and "gemini_model" not in st.session_state:
+        st.session_state.gemini_model = "models/gemini-1.5-flash"
     st.session_state['_session_initialized'] = True
 
 
