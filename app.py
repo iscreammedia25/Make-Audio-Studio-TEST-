@@ -123,14 +123,26 @@ def _autorestore():
         pass
 
 def _load_audio_for_diff(diff: str):
-    """선택한 난이도의 오디오만 디스크에서 읽어 session_state에 올림 (lazy load)."""
+    """선택한 난이도의 오디오만 디스크에서 읽어 session_state에 올림 (lazy load).
+    다른 난이도의 오디오 바이트는 메모리에서 해제해 session_state 직렬화 부담을 줄인다."""
     if st.session_state.get(f"_audio_loaded_{diff}"):
         return
+    cache = st.session_state.get("audio_cache_dict", {})
+    merged = st.session_state.get("merged_scene_cache", {})
+    merged_size = st.session_state.get("merged_scene_cache_size", {})
+    for other in list(cache.keys()):
+        if other != diff and cache.get(other):
+            cache[other] = {}
+            st.session_state.pop(f"_audio_loaded_{other}", None)
+            merged[other] = {}
+            merged_size[other] = 0
+    st.session_state["merged_scene_cache"] = merged
+    st.session_state["merged_scene_cache_size"] = merged_size
     diff_dir = os.path.join(_audio_dir(), diff)
     if not os.path.isdir(diff_dir):
+        st.session_state["audio_cache_dict"] = cache
         st.session_state[f"_audio_loaded_{diff}"] = True
         return
-    cache = st.session_state.get("audio_cache_dict", {})
     diff_cache = cache.get(diff, {})
     for fname in os.listdir(diff_dir):
         if not fname.endswith(".mp3"):
@@ -187,6 +199,8 @@ if 'generation_errors' not in st.session_state:
     st.session_state.generation_errors = []
 if 'generation_skipped' not in st.session_state:
     st.session_state.generation_skipped = []
+if 'zip_cache' not in st.session_state:
+    st.session_state.zip_cache = {}  # {diff: {"data": bytes, "size": int}}
 if 'seg_page' not in st.session_state:
     st.session_state.seg_page = {d: 0 for d in DIFFICULTIES}
 if 'speed_settings' not in st.session_state:
@@ -222,6 +236,7 @@ def reset_all_state():
     st.session_state.clone_previews = {}
     st.session_state.generation_errors = []
     st.session_state.generation_skipped = []
+    st.session_state.zip_cache = {}
     # 오디오 lazy load 플래그 초기화
     for _d in DIFFICULTIES:
         st.session_state.pop(f"_audio_loaded_{_d}", None)
@@ -243,13 +258,14 @@ if '_session_initialized' not in st.session_state:
     st.session_state['_session_initialized'] = True
 
 
+_AUDIO_PAGE_SIZE = 15
+
 @st.fragment
 def audio_player_display(current_view_diff: str, difficulty_suffix: str):
-    """오디오 플레이어 + 다운로드 섹션. 부분 렌더링으로 전체 페이지 재렌더 방지."""
+    """오디오 플레이어 + 다운로드 섹션. 페이지네이션으로 한 번에 렌더하는 오디오 수를 제한."""
     if not st.session_state.audio_cache_dict[current_view_diff]:
         return
 
-    current_scene = None
     lines_mapping = {}
     for item in st.session_state.parsed_data_dict[current_view_diff]:
         key = f"{item['scene']}_{item['line']}"
@@ -257,7 +273,28 @@ def audio_player_display(current_view_diff: str, difficulty_suffix: str):
             lines_mapping[key] = []
         lines_mapping[key].append(item)
 
+    cached_keys = [k for k in lines_mapping if k in st.session_state.audio_cache_dict[current_view_diff]]
+    total_cached = len(cached_keys)
+    total_pages = max(1, (total_cached + _AUDIO_PAGE_SIZE - 1) // _AUDIO_PAGE_SIZE)
+    _page_key = f"_audio_pg_{current_view_diff}"
+    cur_page = min(st.session_state.get(_page_key, 0), total_pages - 1)
+    st.session_state[_page_key] = cur_page
+    page_keys = set(cached_keys[cur_page * _AUDIO_PAGE_SIZE:(cur_page + 1) * _AUDIO_PAGE_SIZE])
+
+    if total_pages > 1:
+        pc1, pc2, pc3 = st.columns([1, 3, 1])
+        if pc1.button("◀ 이전", disabled=(cur_page == 0), key="audio_prev"):
+            st.session_state[_page_key] = cur_page - 1
+            st.rerun(scope="fragment")
+        pc2.markdown(f"<div style='text-align:center'><b>{cur_page + 1} / {total_pages} 페이지</b> &nbsp;(총 {total_cached}개 음원)</div>", unsafe_allow_html=True)
+        if pc3.button("다음 ▶", disabled=(cur_page >= total_pages - 1), key="audio_next"):
+            st.session_state[_page_key] = cur_page + 1
+            st.rerun(scope="fragment")
+
+    current_scene = None
     for line_key, segs in lines_mapping.items():
+        if line_key not in page_keys:
+            continue
         scene_tag = segs[0]['scene']
         if scene_tag != current_scene:
             current_scene = scene_tag
@@ -326,7 +363,13 @@ def audio_player_display(current_view_diff: str, difficulty_suffix: str):
     st.header("4. 결과물 전체 다운로드")
     col1, col2 = st.columns(2)
     with col1:
-        zip_data = exporter.create_individual_zip(difficulty_suffix, st.session_state.parsed_data_dict[current_view_diff], st.session_state.audio_cache_dict[current_view_diff], difficulty=current_view_diff)
+        _cache_size = len(st.session_state.audio_cache_dict[current_view_diff])
+        _zip_entry = st.session_state.zip_cache.get(current_view_diff, {})
+        if _zip_entry.get("size") != _cache_size:
+            zip_data = exporter.create_individual_zip(difficulty_suffix, st.session_state.parsed_data_dict[current_view_diff], st.session_state.audio_cache_dict[current_view_diff], difficulty=current_view_diff)
+            st.session_state.zip_cache[current_view_diff] = {"data": zip_data, "size": _cache_size}
+        else:
+            zip_data = _zip_entry["data"]
         if zip_data:
             st.download_button(
                 label=f"📦 {current_view_diff} 개별 파일 다운로드 (ZIP)",
@@ -857,7 +900,19 @@ with _tab_dub:
                 if st.session_state.voices:
                     chosen_id = voice_selector_ui(f"{item['type']} {key}", current_voice_id, st.session_state.voices, f"row_{key}", char_info=st.session_state.characters.get(item['character']), char_name=item['character'])
                     if chosen_id != current_voice_id:
+                        char_name = item.get('character', '')
                         st.session_state.voice_mappings_dict[current_view_diff][key] = chosen_id
+                        # 같은 캐릭터를 모든 난이도에 동일하게 적용
+                        for _d in DIFFICULTIES:
+                            if _d == current_view_diff:
+                                continue
+                            for _it in st.session_state.parsed_data_dict.get(_d, []):
+                                if _it.get('character') == char_name:
+                                    st.session_state.voice_mappings_dict[_d][_it['segment_id']] = chosen_id
+                        if char_name:
+                            st.session_state.character_voice_mappings[char_name] = chosen_id
+                            if char_name == '내레이션':
+                                st.session_state.all_narration_voice_id = chosen_id
                         st.rerun()
                 else:
                     st.write("API Key 필요")
@@ -893,6 +948,33 @@ with _tab_dub:
         # 4. 음원 생성 및 미리보기 섹션
         st.divider()
         st.header("4. 음원 생성 및 미리보기")
+
+        # Normal 보이스 설정을 다른 난이도로 일괄 동기화
+        if st.session_state.parsed_data_dict.get("Normal") and any(
+            st.session_state.voice_mappings_dict["Normal"].get(it['segment_id'])
+            for it in st.session_state.parsed_data_dict["Normal"]
+        ):
+            if st.button("🔁 Normal 보이스 설정을 전체 난이도에 동기화", use_container_width=True, help="Normal에서 설정한 캐릭터/내레이션 보이스를 Easy·Difficult·mBook에 동일하게 적용합니다."):
+                char_voice_map = {}
+                for it in st.session_state.parsed_data_dict["Normal"]:
+                    vid = st.session_state.voice_mappings_dict["Normal"].get(it['segment_id'], '')
+                    if vid:
+                        char_voice_map[it['character']] = vid
+                synced = 0
+                for d in DIFFICULTIES:
+                    if d == "Normal":
+                        continue
+                    for it in st.session_state.parsed_data_dict.get(d, []):
+                        vid = char_voice_map.get(it['character'], '')
+                        if vid:
+                            st.session_state.voice_mappings_dict[d][it['segment_id']] = vid
+                            synced += 1
+                for cname, vid in char_voice_map.items():
+                    st.session_state.character_voice_mappings[cname] = vid
+                if '내레이션' in char_voice_map:
+                    st.session_state.all_narration_voice_id = char_voice_map['내레이션']
+                st.success(f"✅ {synced}개 세그먼트에 보이스 동기화 완료!")
+                st.rerun()
 
         # 속도 조절 모드 선택 복구
         speed_mode = st.radio("🚀 속도 조절 모드", ["일괄 조정", "개별 조정(보이스/내레이션)"], horizontal=True)
