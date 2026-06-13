@@ -39,12 +39,26 @@ def _save_key_to_env(var_name: str, value: str):
     set_key(_DOTENV_PATH, var_name, value)
 
 def _session_token() -> str:
-    """URL query param ?t= 에서 토큰을 읽거나 없으면 새로 생성."""
+    """URL query param ?t= 에서 토큰을 읽거나 없으면 새로 생성. session_state에 캐싱."""
+    if "_session_token" in st.session_state:
+        return st.session_state["_session_token"]
     token = st.query_params.get("t")
     if not token:
         token = uuid.uuid4().hex[:12]
         st.query_params["t"] = token
+    st.session_state["_session_token"] = token
     return token
+
+def _save_audio_now(diff: str, line_key: str, audio_bytes: bytes):
+    """오디오 생성 직후 즉시 디스크에 저장 (서버 크래시 대비)."""
+    try:
+        diff_dir = os.path.join(_audio_dir(), diff)
+        os.makedirs(diff_dir, exist_ok=True)
+        safe_key = line_key.replace("/", "_").replace("\\", "_")
+        with open(os.path.join(diff_dir, f"{safe_key}.mp3"), "wb") as f:
+            f.write(audio_bytes)
+    except Exception:
+        pass
 
 def _session_dir() -> str:
     return os.path.join(_SESSIONS_ROOT, _session_token())
@@ -298,7 +312,9 @@ def audio_player_display(current_view_diff: str, difficulty_suffix: str):
                                         audio_bytes = audio_engine.normalize_audio(audio_bytes)
                                         regen_audios.append(audio_bytes)
                             if regen_audios:
-                                st.session_state.audio_cache_dict[current_view_diff][line_key] = audio_engine.merge_audio(regen_audios)
+                                merged = audio_engine.merge_audio(regen_audios)
+                                st.session_state.audio_cache_dict[current_view_diff][line_key] = merged
+                                _save_audio_now(current_view_diff, line_key, merged)
                                 st.session_state.merged_scene_cache[current_view_diff] = {}
                                 st.session_state.merged_scene_cache_size[current_view_diff] = 0
                                 st.success(f"ID: {segs[0]['line']} 재생성 완료!")
@@ -482,6 +498,23 @@ with st.sidebar:
 
 # 매 렌더마다 자동 저장 (파싱된 데이터가 있을 때만)
 _autosave()
+
+# WebSocket keepalive — 백그라운드 탭 throttling으로 인한 연결 끊김 방지
+import streamlit.components.v1 as _components
+_components.html(
+    """
+    <script>
+    (function() {
+        var interval = 30000; // 30초마다
+        function ping() {
+            fetch('/_stcore/health').catch(function(){});
+        }
+        setInterval(ping, interval);
+    })();
+    </script>
+    """,
+    height=0,
+)
 
 _tab_dub, _tab_narr = st.tabs(['🎙️ 대본 더빙', '🎬 나레이션 스튜디오'])
 
@@ -994,7 +1027,9 @@ with _tab_dub:
                         time.sleep(0.3)
 
                     if segment_audios:
-                        st.session_state.audio_cache_dict[d][line_key] = audio_engine.merge_audio(segment_audios)
+                        merged = audio_engine.merge_audio(segment_audios)
+                        st.session_state.audio_cache_dict[d][line_key] = merged
+                        _save_audio_now(d, line_key, merged)
 
                     processed += 1
                     progress_bar.progress(processed / total_lines)

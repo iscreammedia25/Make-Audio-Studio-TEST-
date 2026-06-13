@@ -1,9 +1,9 @@
 import time
 
-import requests
 import streamlit as st
 
 import audio_engine
+from ui_helpers import voice_selector_ui
 
 MOOD_PRESETS = {
     "Neutral":    {"stability": 0.50, "similarity_boost": 0.75, "style": 0.1},
@@ -179,17 +179,15 @@ def _render_segment(rid: int, seg_id: int):
         )
 
     with sc2:
-        vc1, vc2 = st.columns([3, 1])
-        with vc1:
-            st.text_input(
-                "보이스 ID",
-                key=f"seg_vid_{rid}_{seg_id}",
-                placeholder="voice ID",
-                label_visibility="collapsed",
-            )
-        with vc2:
-            with st.popover("🎤", help="음성 클로닝"):
-                _render_clone_popover(rid, seg_id)
+        current_vid = st.session_state.get(f"seg_vid_{rid}_{seg_id}", "")
+        voices = st.session_state.get("voices", {})
+        new_vid = voice_selector_ui(
+            "보이스", current_vid, voices,
+            f"narr_{rid}_{seg_id}",
+        )
+        if new_vid != current_vid:
+            st.session_state[f"seg_vid_{rid}_{seg_id}"] = new_vid
+            st.rerun()
 
     with sc3:
         if st.session_state.get(f"seg_mood_{rid}_{seg_id}") not in MOOD_PRESETS:
@@ -215,55 +213,6 @@ def _render_segment(rid: int, seg_id: int):
             _cleanup_seg(rid, seg_id)
             st.rerun()
 
-
-def _render_clone_popover(rid: int, seg_id: int):
-    st.caption("🎤 음성 클로닝")
-    name = st.text_input(
-        "클론 이름", key=f"clone_name_{rid}_{seg_id}",
-        placeholder="예: 토끼 목소리",
-    )
-    files = st.file_uploader(
-        "샘플 오디오", type=["mp3", "wav", "m4a", "ogg"],
-        accept_multiple_files=True,
-        key=f"clone_files_{rid}_{seg_id}",
-        label_visibility="collapsed",
-    )
-    if st.button(
-        "클론 생성", key=f"clone_create_{rid}_{seg_id}",
-        disabled=not (name and files),
-        use_container_width=True,
-    ):
-        with st.spinner("클로닝 중..."):
-            vid, err = _create_clone(name, files)
-        if err:
-            st.error(err)
-        else:
-            st.session_state[f"seg_vid_{rid}_{seg_id}"] = vid
-            st.success(f"✅ 완료 — ID: `{vid}`")
-            st.rerun()
-
-
-def _create_clone(name: str, files) -> tuple:
-    api_key = st.session_state.get("api_key", "").strip()
-    if not api_key:
-        return "", "API Key가 없습니다."
-    form_files = [
-        ("files", (f.name, f.read(), f.type or "audio/mpeg"))
-        for f in files
-    ]
-    try:
-        resp = requests.post(
-            "https://api.elevenlabs.io/v1/voices/add",
-            headers={"xi-api-key": api_key},
-            data={"name": name},
-            files=form_files,
-            timeout=60,
-        )
-        if resp.status_code == 200:
-            return resp.json().get("voice_id", ""), None
-        return "", f"클론 실패 ({resp.status_code}): {resp.text[:200]}"
-    except Exception as e:
-        return "", str(e)
 
 
 def _generate_row(rid: int, display_num: int = 0) -> str | None:
@@ -320,12 +269,10 @@ def _cleanup_row(rid: int):
 def _cleanup_seg(rid: int, seg_id: int):
     for suffix in ["text", "vid", "mood", "speed"]:
         st.session_state.pop(f"seg_{suffix}_{rid}_{seg_id}", None)
-    for suffix in ["name", "files"]:
-        st.session_state.pop(f"clone_{suffix}_{rid}_{seg_id}", None)
 
 
 def _reset():
-    prefixes = ("narr_", "seg_", "rgen_", "rdel_", "rdl_", "radd", "sadd_", "sdel_", "clone_")
+    prefixes = ("narr_", "seg_", "rgen_", "rdel_", "rdl_", "radd", "sadd_", "sdel_")
     for k in [k for k in st.session_state if any(k.startswith(p) for p in prefixes)]:
         del st.session_state[k]
     st.session_state.narr_row_ids       = [0]
