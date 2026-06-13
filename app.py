@@ -264,7 +264,16 @@ if '_session_initialized' not in st.session_state:
             if _sub.get("success"):
                 st.session_state.subscription_info = _sub
     if st.session_state.gemini_api_key and "gemini_model" not in st.session_state:
-        st.session_state.gemini_model = "models/gemini-1.5-flash"
+        try:
+            from google import genai as _genai
+            _client = _genai.Client(api_key=st.session_state.gemini_api_key)
+            _model_names = [m.name for m in _client.models.list()]
+            _preferred = ["models/gemini-1.5-flash", "models/gemini-1.5-pro",
+                          "models/gemini-2.0-flash-exp", "models/gemini-1.0-pro"]
+            _best = next((m for m in _preferred if m in _model_names), None)
+            st.session_state.gemini_model = _best or (_model_names[0] if _model_names else "models/gemini-1.5-flash")
+        except Exception:
+            st.session_state.gemini_model = "models/gemini-1.5-flash"
     st.session_state['_session_initialized'] = True
 
 
