@@ -30,7 +30,7 @@ _SESSION_CLEANUP_AGE   = 7 * 86400    # 7일 지난 세션 폴더 자동 삭제
 _PERSISTENT_KEYS = [
     "parsed_data_dict", "voice_mappings_dict", "script_parsed_dict",
     "characters", "character_voice_mappings", "character_confirmed",
-    "speed_settings",
+    "speed_settings", "all_narration_voice_id",
 ]
 
 def _save_key_to_env(var_name: str, value: str):
@@ -185,6 +185,8 @@ if 'merged_scene_cache_size' not in st.session_state:
     st.session_state.merged_scene_cache_size = {d: 0 for d in DIFFICULTIES}
 if 'generation_errors' not in st.session_state:
     st.session_state.generation_errors = []
+if 'generation_skipped' not in st.session_state:
+    st.session_state.generation_skipped = []
 if 'seg_page' not in st.session_state:
     st.session_state.seg_page = {d: 0 for d in DIFFICULTIES}
 if 'speed_settings' not in st.session_state:
@@ -218,6 +220,8 @@ def reset_all_state():
     st.session_state.character_confirmed = False
     st.session_state.design_previews = {}
     st.session_state.clone_previews = {}
+    st.session_state.generation_errors = []
+    st.session_state.generation_skipped = []
     # 오디오 lazy load 플래그 초기화
     for _d in DIFFICULTIES:
         st.session_state.pop(f"_audio_loaded_{_d}", None)
@@ -977,6 +981,7 @@ with _tab_dub:
             )
             processed = 0
             generation_errors = []
+            skipped_lines = []
 
             for d in target_diffs:
                 status_text.text(f"[{d}] 음원 생성 중... ({processed}/{total_lines})")
@@ -988,6 +993,7 @@ with _tab_dub:
 
                 for line_key, segments in lines_to_process.items():
                     segment_audios = []
+                    missing_voice_chars = []
                     for seg in segments:
                         voice_id = st.session_state.voice_mappings_dict[d].get(seg['segment_id'])
                         if not voice_id:
@@ -996,6 +1002,7 @@ with _tab_dub:
                                         if cname == '내레이션'
                                         else st.session_state.character_voice_mappings.get(cname, ''))
                         if not voice_id:
+                            missing_voice_chars.append(seg.get('character', '?'))
                             continue
 
                         preset = MOOD_PRESETS.get(seg.get('mood', 'Neutral'), MOOD_PRESETS['Neutral'])
@@ -1024,13 +1031,19 @@ with _tab_dub:
                         merged = audio_engine.normalize_audio(merged)
                         st.session_state.audio_cache_dict[d][line_key] = merged
                         _save_audio_now(d, line_key, merged)
+                    elif missing_voice_chars:
+                        chars_str = ", ".join(dict.fromkeys(missing_voice_chars))
+                        skipped_lines.append(f"[{d}] {line_key}: 보이스 미설정 ({chars_str})")
 
                     processed += 1
                     progress_bar.progress(processed / total_lines)
 
             st.session_state.generation_errors = generation_errors
+            st.session_state.generation_skipped = skipped_lines
             if generation_errors:
                 status_text.text("생성 중 일부 오류가 발생했습니다.")
+            elif skipped_lines:
+                status_text.text(f"생성 완료 (일부 문장 보이스 미설정으로 건너뜀)")
             else:
                 status_text.text(f"음원 생성 완료!")
                 st.balloons()
@@ -1070,6 +1083,16 @@ with _tab_dub:
                 st.error(err)
             if st.button("오류 메시지 닫기"):
                 st.session_state.generation_errors = []
+                st.rerun()
+
+        if st.session_state.generation_skipped:
+            n = len(st.session_state.generation_skipped)
+            with st.expander(f"⚠️ 보이스 미설정으로 건너뛴 문장: {n}개 — 클릭해서 확인"):
+                st.info("Step 2 '보이스 설정'에서 해당 캐릭터/내레이션 보이스를 지정한 뒤 다시 생성하세요.")
+                for msg in st.session_state.generation_skipped:
+                    st.write(f"• {msg}")
+            if st.button("건너뜀 메시지 닫기", key="close_skipped"):
+                st.session_state.generation_skipped = []
                 st.rerun()
 
         # 오디오 플레이어 + 다운로드 (fragment로 부분 렌더링)
