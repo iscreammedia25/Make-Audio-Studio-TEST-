@@ -576,6 +576,14 @@ with _tab_narr:
 with _tab_dub:
     st.title("🎙️ 동화 대본 자동 더빙 및 편집 에이전트")
 
+    # 기존 작업이 있을 때만 "새 작업 시작" 버튼 노출
+    if any(st.session_state.script_parsed_dict.values()):
+        _nc1, _nc2 = st.columns([5, 1])
+        _nc1.caption("현재 작업 중인 대본이 있습니다. 새 대본을 분석하려면 먼저 초기화하세요.")
+        if _nc2.button("📂 새 작업 시작", use_container_width=True, type="secondary"):
+            reset_all_state()
+            st.rerun()
+
     st.divider()
     st.header("Step 1: 대본 파일 업로드 및 AI 분석")
     import pandas as pd
@@ -685,6 +693,18 @@ with _tab_dub:
                                     st.session_state.parsed_data_dict[diff] = parsed
                                     st.session_state.voice_mappings_dict[diff] = {item['segment_id']: "" for item in parsed}
                                     st.session_state.script_parsed_dict[diff] = True
+                                    # 새 대본 파싱 시 이전 오디오 캐시와 충돌 방지
+                                    st.session_state.audio_cache_dict[diff] = {}
+                                    st.session_state.merged_scene_cache[diff] = {}
+                                    st.session_state.merged_scene_cache_size[diff] = 0
+                                    st.session_state.zip_cache.pop(diff, None)
+                                    st.session_state.pop(f"_audio_loaded_{diff}", None)
+                                    _old_dir = os.path.join(_audio_dir(), diff)
+                                    if os.path.isdir(_old_dir):
+                                        try:
+                                            shutil.rmtree(_old_dir)
+                                        except Exception:
+                                            pass
                                     success_count += 1
                                 else:
                                     st.error(f"[{diff}] 세그먼트 분석 실패: {res.get('error', '알 수 없는 오류') if res else '결과 없음'}")
