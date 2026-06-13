@@ -992,33 +992,6 @@ with _tab_dub:
         st.divider()
         st.header("4. 음원 생성 및 미리보기")
 
-        # Normal 보이스 설정을 다른 난이도로 일괄 동기화
-        if st.session_state.parsed_data_dict.get("Normal") and any(
-            st.session_state.voice_mappings_dict["Normal"].get(it['segment_id'])
-            for it in st.session_state.parsed_data_dict["Normal"]
-        ):
-            if st.button("🔁 Normal 보이스 설정을 전체 난이도에 동기화", use_container_width=True, help="Normal에서 설정한 캐릭터/내레이션 보이스를 Easy·Difficult·mBook에 동일하게 적용합니다."):
-                char_voice_map = {}
-                for it in st.session_state.parsed_data_dict["Normal"]:
-                    vid = st.session_state.voice_mappings_dict["Normal"].get(it['segment_id'], '')
-                    if vid:
-                        char_voice_map[it['character']] = vid
-                synced = 0
-                for d in DIFFICULTIES:
-                    if d == "Normal":
-                        continue
-                    for it in st.session_state.parsed_data_dict.get(d, []):
-                        vid = char_voice_map.get(it['character'], '')
-                        if vid:
-                            st.session_state.voice_mappings_dict[d][it['segment_id']] = vid
-                            synced += 1
-                for cname, vid in char_voice_map.items():
-                    st.session_state.character_voice_mappings[cname] = vid
-                if '내레이션' in char_voice_map:
-                    st.session_state.all_narration_voice_id = char_voice_map['내레이션']
-                st.success(f"✅ {synced}개 세그먼트에 보이스 동기화 완료!")
-                st.rerun()
-
         # 속도 조절 모드 선택 복구
         speed_mode = st.radio("🚀 속도 조절 모드", ["일괄 조정", "개별 조정(보이스/내레이션)"], horizontal=True)
 
