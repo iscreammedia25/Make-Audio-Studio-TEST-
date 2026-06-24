@@ -384,6 +384,9 @@ def audio_player_display(current_view_diff: str, difficulty_suffix: str):
     # 다운로드 섹션
     st.divider()
     st.header("4. 결과물 전체 다운로드")
+    # 엑셀의 ID(book_id)를 ZIP 파일명에 사용 → {ID}_Audio_{난이도}_A.zip
+    _zip_book_id = st.session_state.parsed_data_dict[current_view_diff][0].get('book_id', '') if st.session_state.parsed_data_dict[current_view_diff] else ""
+    _zip_name = f"{_zip_book_id}_Audio_{zip_name_suffix}.zip"
     col1, col2 = st.columns(2)
     with col1:
         _cache_size = len(st.session_state.audio_cache_dict[current_view_diff])
@@ -397,7 +400,7 @@ def audio_player_display(current_view_diff: str, difficulty_suffix: str):
             st.download_button(
                 label=f"📦 {current_view_diff} 개별 파일 다운로드 (ZIP)",
                 data=zip_data,
-                file_name=f"{difficulty_suffix}_individual_files.zip",
+                file_name=_zip_name,
                 mime="application/octet-stream",
                 use_container_width=True,
                 key=f"btn_dl_individual_{current_view_diff}"
@@ -432,7 +435,7 @@ def audio_player_display(current_view_diff: str, difficulty_suffix: str):
             st.download_button(
                 label=f"🎞️ {current_view_diff} 씬별 병합 다운로드 (ZIP)",
                 data=zip_data_merged,
-                file_name=f"{difficulty_suffix}_merged_scenes.zip",
+                file_name=_zip_name,
                 mime="application/octet-stream",
                 use_container_width=True,
                 key=f"btn_dl_merged_{current_view_diff}"
@@ -552,6 +555,8 @@ with st.sidebar:
     # 사이드바의 난이도는 "현재 뷰어에서 볼 난이도"를 결정함
     current_view_diff = st.radio("필요한 음원 선택", DIFFICULTIES)
     difficulty_suffix = {"Normal": "N_A", "Easy": "E_A", "Difficult": "D_A", "mBook": "A"}.get(current_view_diff, "N_A")
+    # ZIP 파일명용 접미사 (mBook은 "mBook_A" 형태 유지)
+    zip_name_suffix = {"Normal": "N_A", "Easy": "E_A", "Difficult": "D_A", "mBook": "mBook_A"}.get(current_view_diff, "N_A")
     _load_audio_for_diff(current_view_diff)
     story_no = "" # UI에서 제거됨
 
