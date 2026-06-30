@@ -314,6 +314,7 @@ def audio_player_display(current_view_diff: str, difficulty_suffix: str):
             st.session_state[_page_key] = cur_page + 1
             st.rerun(scope="fragment")
 
+    _first_mbook_key = list(lines_mapping.keys())[0] if lines_mapping else None
     current_scene = None
     for line_key, segs in lines_mapping.items():
         if line_key not in page_keys:
@@ -343,7 +344,10 @@ def audio_player_display(current_view_diff: str, difficulty_suffix: str):
                 _bid = segs[0].get('book_id', 'Unknown')
                 _seq = segs[0].get('seq_num', 'ST00')
                 if current_view_diff == "mBook":
-                    dl_filename = f"{_bid}_mBook_{_seq}_A.mp3"
+                    if line_key == _first_mbook_key:
+                        dl_filename = f"{_bid}_Cover_A.mp3"
+                    else:
+                        dl_filename = f"{_bid}_mBook_{_seq}_A.mp3"
                 else:
                     dl_filename = f"{_bid}_{segs[0].get('scene_num','SC00')}_{_seq}_{difficulty_suffix}.mp3"
                 cols[3].download_button("⬇️ 다운", data=st.session_state.audio_cache_dict[current_view_diff][line_key], file_name=dl_filename, mime="audio/mpeg", key=f"dl_{line_key}", use_container_width=True)
