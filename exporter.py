@@ -9,6 +9,7 @@ def create_individual_zip(difficulty_suffix, parsed_data, audio_cache, difficult
     """
     buffer = io.BytesIO()
     added_keys = set()
+    mbook_counter = 1
     with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
         if difficulty == "mBook" and cover_audio:
             book_id = parsed_data[0].get('book_id', 'Unknown') if parsed_data else 'Unknown'
@@ -17,10 +18,11 @@ def create_individual_zip(difficulty_suffix, parsed_data, audio_cache, difficult
             key = f"{line['scene']}_{line['line']}"
             if key in audio_cache and key not in added_keys:
                 book_id = line.get('book_id', 'Unknown')
-                seq_num = line.get('seq_num', 'ST00')
                 if difficulty == "mBook":
-                    filename = f"{book_id}_mBook_{seq_num}_A.mp3"
+                    filename = f"{book_id}_mBook_ST{mbook_counter:02d}_A.mp3"
+                    mbook_counter += 1
                 else:
+                    seq_num = line.get('seq_num', 'ST00')
                     scene_num = line.get('scene_num', 'SC00')
                     filename = f"{book_id}_{scene_num}_{seq_num}_{difficulty_suffix}.mp3"
                 zf.writestr(filename, audio_cache[key])
