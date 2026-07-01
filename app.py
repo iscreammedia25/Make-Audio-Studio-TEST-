@@ -222,6 +222,10 @@ if 'uploader_key' not in st.session_state:
     st.session_state.uploader_key = 0
 if 'script_parsed_dict' not in st.session_state:
     st.session_state.script_parsed_dict = {d: False for d in DIFFICULTIES}
+if 'cover_title_text' not in st.session_state:
+    st.session_state.cover_title_text = ""
+if 'cover_audio_bytes' not in st.session_state:
+    st.session_state.cover_audio_bytes = None
 
 # 전체 리셋 함수
 def reset_all_state():
@@ -239,6 +243,8 @@ def reset_all_state():
     st.session_state.generation_errors = []
     st.session_state.generation_skipped = []
     st.session_state.zip_cache = {}
+    st.session_state.cover_title_text = ""
+    st.session_state.cover_audio_bytes = None
     st.session_state.last_uploaded_files = []
     st.session_state.uploader_key = st.session_state.get('uploader_key', 0) + 1
     # 오디오 lazy load 플래그 초기화
@@ -284,6 +290,70 @@ if '_session_initialized' not in st.session_state:
 _AUDIO_PAGE_SIZE = 15
 
 @st.fragment
+def mbook_cover_section(book_id: str):
+    """mBook 전용 Cover 음원 생성 섹션. 내레이션 보이스를 자동 적용."""
+    narr_voice_id = st.session_state.get('all_narration_voice_id', '')
+
+    with st.container(border=True):
+        col_title, col_badge = st.columns([5, 2])
+        col_title.markdown("#### 📖 Cover 음원")
+        col_badge.caption(f"파일명: `{book_id}_Cover_A.mp3`")
+
+        if narr_voice_id:
+            voice_name = next(
+                (name for name, info in st.session_state.voices.items()
+                 if isinstance(info, dict) and info.get('id') == narr_voice_id),
+                narr_voice_id
+            )
+            st.info(f"🎙️ 내레이션 보이스 자동 적용: **{voice_name}**", icon=None)
+        else:
+            st.warning("내레이션 보이스가 설정되지 않았습니다. Step 2 '보이스 설정'에서 내레이션 보이스를 먼저 설정해 주세요.")
+
+        title_text = st.text_area(
+            "도서 타이틀",
+            value=st.session_state.cover_title_text,
+            placeholder="도서 타이틀을 입력하세요  (예: 마법의 숲 이야기)",
+            height=90,
+            label_visibility="collapsed",
+            key="cover_title_input",
+        )
+
+        col_btn, col_dl = st.columns([3, 2])
+        with col_btn:
+            gen_disabled = not (narr_voice_id and st.session_state.api_key and title_text.strip())
+            if st.button("🎙️ Cover 음원 생성", disabled=gen_disabled, use_container_width=True, type="primary", key="btn_cover_gen"):
+                st.session_state.cover_title_text = title_text
+                with st.spinner("Cover 음원 생성 중..."):
+                    try:
+                        audio_bytes = audio_engine.generate_audio(
+                            st.session_state.api_key, title_text.strip(), narr_voice_id
+                        )
+                        if isinstance(audio_bytes, bytes):
+                            speed = st.session_state.speed_settings.get('내레이션', 1.0)
+                            if speed != 1.0:
+                                audio_bytes = audio_engine.apply_speed_control(audio_bytes, speed)
+                            st.session_state.cover_audio_bytes = audio_engine.normalize_audio(audio_bytes)
+                            st.rerun(scope="fragment")
+                        else:
+                            st.error("음원 생성에 실패했습니다.")
+                    except Exception as e:
+                        st.error(f"오류: {str(e)}")
+
+        cover_audio = st.session_state.cover_audio_bytes
+        if cover_audio:
+            st.audio(cover_audio, format="audio/mp3")
+            with col_dl:
+                st.download_button(
+                    f"⬇️ {book_id}_Cover_A.mp3",
+                    data=cover_audio,
+                    file_name=f"{book_id}_Cover_A.mp3",
+                    mime="audio/mpeg",
+                    use_container_width=True,
+                    key="btn_cover_dl",
+                )
+
+
+@st.fragment
 def audio_player_display(current_view_diff: str, difficulty_suffix: str):
     """오디오 플레이어 + 다운로드 섹션. 페이지네이션으로 한 번에 렌더하는 오디오 수를 제한."""
     if not st.session_state.audio_cache_dict[current_view_diff]:
@@ -314,7 +384,6 @@ def audio_player_display(current_view_diff: str, difficulty_suffix: str):
             st.session_state[_page_key] = cur_page + 1
             st.rerun(scope="fragment")
 
-    _first_mbook_key = list(lines_mapping.keys())[0] if lines_mapping else None
     current_scene = None
     for line_key, segs in lines_mapping.items():
         if line_key not in page_keys:
@@ -344,10 +413,7 @@ def audio_player_display(current_view_diff: str, difficulty_suffix: str):
                 _bid = segs[0].get('book_id', 'Unknown')
                 _seq = segs[0].get('seq_num', 'ST00')
                 if current_view_diff == "mBook":
-                    if line_key == _first_mbook_key:
-                        dl_filename = f"{_bid}_Cover_A.mp3"
-                    else:
-                        dl_filename = f"{_bid}_mBook_{_seq}_A.mp3"
+                    dl_filename = f"{_bid}_mBook_{_seq}_A.mp3"
                 else:
                     dl_filename = f"{_bid}_{segs[0].get('scene_num','SC00')}_{_seq}_{difficulty_suffix}.mp3"
                 cols[3].download_button("⬇️ 다운", data=st.session_state.audio_cache_dict[current_view_diff][line_key], file_name=dl_filename, mime="audio/mpeg", key=f"dl_{line_key}", use_container_width=True)
@@ -394,10 +460,12 @@ def audio_player_display(current_view_diff: str, difficulty_suffix: str):
     col1, col2 = st.columns(2)
     with col1:
         _cache_size = len(st.session_state.audio_cache_dict[current_view_diff])
+        _cover_audio = st.session_state.cover_audio_bytes if current_view_diff == "mBook" else None
+        _cover_len = len(_cover_audio) if _cover_audio else 0
         _zip_entry = st.session_state.zip_cache.get(current_view_diff, {})
-        if _zip_entry.get("size") != _cache_size:
-            zip_data = exporter.create_individual_zip(difficulty_suffix, st.session_state.parsed_data_dict[current_view_diff], st.session_state.audio_cache_dict[current_view_diff], difficulty=current_view_diff)
-            st.session_state.zip_cache[current_view_diff] = {"data": zip_data, "size": _cache_size}
+        if _zip_entry.get("size") != _cache_size or _zip_entry.get("cover_len") != _cover_len:
+            zip_data = exporter.create_individual_zip(difficulty_suffix, st.session_state.parsed_data_dict[current_view_diff], st.session_state.audio_cache_dict[current_view_diff], difficulty=current_view_diff, cover_audio=_cover_audio)
+            st.session_state.zip_cache[current_view_diff] = {"data": zip_data, "size": _cache_size, "cover_len": _cover_len}
         else:
             zip_data = _zip_entry["data"]
         if zip_data:
@@ -435,7 +503,7 @@ def audio_player_display(current_view_diff: str, difficulty_suffix: str):
             else:
                 merged_cache = st.session_state.merged_scene_cache[current_view_diff]
             first_book_id = st.session_state.parsed_data_dict[current_view_diff][0].get('book_id', '') if st.session_state.parsed_data_dict[current_view_diff] else ""
-            zip_data_merged = exporter.create_merged_zip(difficulty_suffix, merged_cache, book_id=first_book_id, difficulty=current_view_diff)
+            zip_data_merged = exporter.create_merged_zip(difficulty_suffix, merged_cache, book_id=first_book_id, difficulty=current_view_diff, cover_audio=_cover_audio)
             st.download_button(
                 label=f"🎞️ {current_view_diff} 씬별 병합 다운로드 (ZIP)",
                 data=zip_data_merged,
@@ -1201,6 +1269,11 @@ with _tab_dub:
             if st.button("건너뜀 메시지 닫기", key="close_skipped"):
                 st.session_state.generation_skipped = []
                 st.rerun()
+
+        # mBook Cover 음원 섹션 (mBook 선택 시에만 노출)
+        if current_view_diff == "mBook" and st.session_state.parsed_data_dict[current_view_diff]:
+            _cover_book_id = st.session_state.parsed_data_dict[current_view_diff][0].get('book_id', '')
+            mbook_cover_section(_cover_book_id)
 
         # 오디오 플레이어 + 다운로드 (fragment로 부분 렌더링)
         audio_player_display(current_view_diff, difficulty_suffix)
