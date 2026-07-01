@@ -464,6 +464,7 @@ def audio_player_display(current_view_diff: str, difficulty_suffix: str):
                                 _save_audio_now(current_view_diff, line_key, merged)
                                 st.session_state.merged_scene_cache[current_view_diff] = {}
                                 st.session_state.merged_scene_cache_size[current_view_diff] = 0
+                                st.session_state.zip_cache.pop(current_view_diff, None)
                                 st.success(f"ID: {segs[0]['line']} 재생성 완료!")
                                 st.rerun(scope="fragment")
                             else:
@@ -1272,6 +1273,10 @@ with _tab_dub:
 
             st.session_state.generation_errors = generation_errors
             st.session_state.generation_skipped = skipped_lines
+            for _d in target_diffs:
+                st.session_state.zip_cache.pop(_d, None)
+                st.session_state.merged_scene_cache[_d] = {}
+                st.session_state.merged_scene_cache_size[_d] = 0
             if generation_errors:
                 status_text.text("생성 중 일부 오류가 발생했습니다.")
             elif skipped_lines:
