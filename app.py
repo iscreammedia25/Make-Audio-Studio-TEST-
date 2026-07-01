@@ -249,6 +249,7 @@ def reset_all_state():
     st.session_state.cover_audio_bytes = None
     st.session_state.last_uploaded_files = []
     st.session_state.accumulated_script_data = {}
+    st.session_state.mapping_version = 0
     st.session_state.uploader_key = st.session_state.get('uploader_key', 0) + 1
     # 오디오 lazy load 플래그 초기화
     for _d in DIFFICULTIES:
@@ -707,11 +708,14 @@ with _tab_dub:
         accept_multiple_files=True,
     )
     if _raw_uploads:
+        _prev_names = set(st.session_state.accumulated_script_data.keys())
         for _f in _raw_uploads:
             if len(st.session_state.accumulated_script_data) < 4 or _f.name in st.session_state.accumulated_script_data:
                 _data = _f.read()
                 if _data:
                     st.session_state.accumulated_script_data[_f.name] = _data
+        if set(st.session_state.accumulated_script_data.keys()) != _prev_names:
+            st.session_state.mapping_version = st.session_state.get('mapping_version', 0) + 1
 
     if st.session_state.accumulated_script_data:
         st.caption(f"업로드된 파일 ({len(st.session_state.accumulated_script_data)}/4)")
@@ -720,6 +724,7 @@ with _tab_dub:
             _fc.caption(f"📄 {_fname}")
             if _fx.button("✕", key=f"rm_script_{_fname}", help="파일 제거"):
                 del st.session_state.accumulated_script_data[_fname]
+                st.session_state.mapping_version = st.session_state.get('mapping_version', 0) + 1
                 st.session_state.uploader_key += 1
                 st.rerun()
 
@@ -753,7 +758,7 @@ with _tab_dub:
                 st.markdown(f"**{diff}**")
                 default_file = _guess_file(diff)
                 default_idx = file_options.index(default_file) if default_file in file_options else 0
-                selected_name = st.selectbox(diff, file_options, index=default_idx, key=f"diff_map_{diff}", label_visibility="collapsed")
+                selected_name = st.selectbox(diff, file_options, index=default_idx, key=f"diff_map_{diff}_{st.session_state.get('mapping_version', 0)}", label_visibility="collapsed")
                 if selected_name != "(없음)":
                     file_mapping[diff] = file_by_name[selected_name]
 
