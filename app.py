@@ -220,6 +220,8 @@ if 'last_uploaded_files' not in st.session_state:
     st.session_state.last_uploaded_files = []
 if 'uploader_key' not in st.session_state:
     st.session_state.uploader_key = 0
+if 'accumulated_script_data' not in st.session_state:
+    st.session_state.accumulated_script_data = {}  # {filename: bytes}
 if 'script_parsed_dict' not in st.session_state:
     st.session_state.script_parsed_dict = {d: False for d in DIFFICULTIES}
 if 'cover_title_text' not in st.session_state:
@@ -246,6 +248,7 @@ def reset_all_state():
     st.session_state.cover_title_text = ""
     st.session_state.cover_audio_bytes = None
     st.session_state.last_uploaded_files = []
+    st.session_state.accumulated_script_data = {}
     st.session_state.uploader_key = st.session_state.get('uploader_key', 0) + 1
     # 오디오 lazy load 플래그 초기화
     for _d in DIFFICULTIES:
@@ -690,7 +693,37 @@ with _tab_dub:
     st.divider()
     st.header("Step 1: 대본 파일 업로드 및 AI 분석")
     import pandas as pd
-    uploaded_scripts = st.file_uploader("대본 파일 업로드 (CSV 또는 Excel) - 최대 4개", type=['csv', 'xlsx', 'xls'], key=f"script_uploader_{st.session_state.uploader_key}", accept_multiple_files=True)
+    import io as _io
+
+    class _NamedBytesIO(_io.BytesIO):
+        def __init__(self, name, data):
+            super().__init__(data)
+            self.name = name
+
+    _raw_uploads = st.file_uploader(
+        "대본 파일 업로드 (CSV 또는 Excel) - 최대 4개 (한 번에 또는 하나씩 드래그 가능)",
+        type=['csv', 'xlsx', 'xls'],
+        key=f"script_uploader_{st.session_state.uploader_key}",
+        accept_multiple_files=True,
+    )
+    if _raw_uploads:
+        for _f in _raw_uploads:
+            if len(st.session_state.accumulated_script_data) < 4 or _f.name in st.session_state.accumulated_script_data:
+                _data = _f.read()
+                if _data:
+                    st.session_state.accumulated_script_data[_f.name] = _data
+
+    if st.session_state.accumulated_script_data:
+        st.caption(f"업로드된 파일 ({len(st.session_state.accumulated_script_data)}/4)")
+        for _fname in list(st.session_state.accumulated_script_data.keys()):
+            _fc, _fx = st.columns([8, 1])
+            _fc.caption(f"📄 {_fname}")
+            if _fx.button("✕", key=f"rm_script_{_fname}", help="파일 제거"):
+                del st.session_state.accumulated_script_data[_fname]
+                st.session_state.uploader_key += 1
+                st.rerun()
+
+    uploaded_scripts = [_NamedBytesIO(n, d) for n, d in st.session_state.accumulated_script_data.items()]
 
     if uploaded_scripts:
         # 파일명 기반 자동 매핑 및 수동 조정 UI (Normal > Easy > Difficult > mBook 고정 순서)
