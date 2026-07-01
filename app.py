@@ -651,7 +651,7 @@ with st.sidebar:
     current_view_diff = st.radio("필요한 음원 선택", DIFFICULTIES)
     difficulty_suffix = {"Normal": "N_A", "Easy": "E_A", "Difficult": "D_A", "mBook": "A"}.get(current_view_diff, "N_A")
     # ZIP 파일명용 접미사 (mBook은 "mBook_A" 형태 유지)
-    zip_name_suffix = {"Normal": "Audio_A_N", "Easy": "Audio_A_E", "Difficult": "Audio_A_D", "mBook": "mBook_A"}.get(current_view_diff, "Audio_A_N")
+    zip_name_suffix = {"Normal": "Audio_N_A", "Easy": "Audio_E_A", "Difficult": "Audio_D_A", "mBook": "mBook_A"}.get(current_view_diff, "Audio_N_A")
     _load_audio_for_diff(current_view_diff)
     story_no = "" # UI에서 제거됨
 
