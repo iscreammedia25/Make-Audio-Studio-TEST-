@@ -321,7 +321,8 @@ def mbook_cover_section(book_id: str):
                 if st.button("🔄 다시 생성", use_container_width=True, key="btn_cover_reset"):
                     st.session_state.cover_audio_bytes = None
                     st.session_state.cover_title_text = ""
-                    st.rerun(scope="fragment")
+                    st.session_state.zip_cache.pop("mBook", None)
+                    st.rerun()
         else:
             # 미생성: 입력 폼
             if narr_voice_id:
@@ -359,7 +360,8 @@ def mbook_cover_section(book_id: str):
                                 if speed != 1.0:
                                     audio_bytes = audio_engine.apply_speed_control(audio_bytes, speed)
                                 st.session_state.cover_audio_bytes = audio_engine.normalize_audio(audio_bytes)
-                                st.rerun(scope="fragment")
+                                st.session_state.zip_cache.pop("mBook", None)
+                                st.rerun()
                             else:
                                 st.error("음원 생성에 실패했습니다.")
                         except Exception as e:
@@ -479,12 +481,16 @@ def audio_player_display(current_view_diff: str, difficulty_suffix: str):
         _cache_size = len(st.session_state.audio_cache_dict[current_view_diff])
         _cover_audio = st.session_state.cover_audio_bytes if current_view_diff == "mBook" else None
         _cover_len = len(_cover_audio) if _cover_audio else 0
-        _zip_entry = st.session_state.zip_cache.get(current_view_diff, {})
-        if _zip_entry.get("size") != _cache_size or _zip_entry.get("cover_len") != _cover_len:
+        if current_view_diff == "mBook":
+            # mBook: Cover 상태가 별도 프래그먼트에서 변경되므로 캐시 없이 항상 새로 생성
             zip_data = exporter.create_individual_zip(difficulty_suffix, st.session_state.parsed_data_dict[current_view_diff], st.session_state.audio_cache_dict[current_view_diff], difficulty=current_view_diff, cover_audio=_cover_audio)
-            st.session_state.zip_cache[current_view_diff] = {"data": zip_data, "size": _cache_size, "cover_len": _cover_len}
         else:
-            zip_data = _zip_entry["data"]
+            _zip_entry = st.session_state.zip_cache.get(current_view_diff, {})
+            if _zip_entry.get("size") != _cache_size or _zip_entry.get("cover_len") != _cover_len:
+                zip_data = exporter.create_individual_zip(difficulty_suffix, st.session_state.parsed_data_dict[current_view_diff], st.session_state.audio_cache_dict[current_view_diff], difficulty=current_view_diff, cover_audio=_cover_audio)
+                st.session_state.zip_cache[current_view_diff] = {"data": zip_data, "size": _cache_size, "cover_len": _cover_len}
+            else:
+                zip_data = _zip_entry["data"]
         if zip_data:
             st.download_button(
                 label=f"📦 {current_view_diff} 개별 파일 다운로드 (ZIP)",
@@ -1321,9 +1327,9 @@ with _tab_dub:
                 st.session_state.generation_skipped = []
                 st.rerun()
 
-        # mBook Cover 음원 섹션 (mBook 선택 시에만 노출)
-        if current_view_diff == "mBook" and st.session_state.parsed_data_dict[current_view_diff]:
-            _cover_book_id = st.session_state.parsed_data_dict[current_view_diff][0].get('book_id', '')
+        # mBook Cover 음원 섹션 (mBook 음원 생성 후에만 노출)
+        if current_view_diff == "mBook" and st.session_state.audio_cache_dict.get("mBook"):
+            _cover_book_id = st.session_state.parsed_data_dict[current_view_diff][0].get('book_id', '') if st.session_state.parsed_data_dict[current_view_diff] else ''
             mbook_cover_section(_cover_book_id)
 
         # 오디오 플레이어 + 다운로드 (fragment로 부분 렌더링)
