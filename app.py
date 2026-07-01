@@ -887,7 +887,7 @@ with _tab_dub:
                 n_col1, n_col2 = st.columns([3, 1])
                 with n_col1:
                     new_n_id = voice_selector_ui("모두 적용할 내레이션 보이스", st.session_state.all_narration_voice_id, st.session_state.voices, "all_narration")
-                    if new_n_id != st.session_state.all_narration_voice_id:
+                    if new_n_id is not None and new_n_id != st.session_state.all_narration_voice_id:
                         st.session_state.all_narration_voice_id = new_n_id
                         st.rerun()
                 with n_col2:
@@ -933,7 +933,7 @@ with _tab_dub:
                         if st.session_state.voices:
                             current_v = st.session_state.character_voice_mappings.get(new_name, "")
                             chosen_v = voice_selector_ui("보이스", current_v, st.session_state.voices, f"v_char_{new_name}", char_info=info, char_name=new_name)
-                            if chosen_v != current_v:
+                            if chosen_v is not None and chosen_v != current_v:
                                 st.session_state.character_voice_mappings[new_name] = chosen_v
                                 for d in DIFFICULTIES:
                                     for item in st.session_state.parsed_data_dict[d]:
@@ -1070,7 +1070,7 @@ with _tab_dub:
             with cols[4]:
                 if st.session_state.voices:
                     chosen_id = voice_selector_ui(f"{item['type']} {key}", current_voice_id, st.session_state.voices, f"row_{key}", char_info=st.session_state.characters.get(item['character']), char_name=item['character'])
-                    if chosen_id != current_voice_id:
+                    if chosen_id is not None and chosen_id != current_voice_id:
                         char_name = item.get('character', '')
                         st.session_state.voice_mappings_dict[current_view_diff][key] = chosen_id
                         # 같은 캐릭터를 모든 난이도에 동일하게 적용
