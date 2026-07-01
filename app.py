@@ -320,24 +320,27 @@ def mbook_cover_section(book_id: str):
 
         col_btn, col_dl = st.columns([3, 2])
         with col_btn:
-            gen_disabled = not (narr_voice_id and st.session_state.api_key and title_text.strip())
+            gen_disabled = not (narr_voice_id and st.session_state.api_key)
             if st.button("🎙️ Cover 음원 생성", disabled=gen_disabled, use_container_width=True, type="primary", key="btn_cover_gen"):
-                st.session_state.cover_title_text = title_text
-                with st.spinner("Cover 음원 생성 중..."):
-                    try:
-                        audio_bytes = audio_engine.generate_audio(
-                            st.session_state.api_key, title_text.strip(), narr_voice_id
-                        )
-                        if isinstance(audio_bytes, bytes):
-                            speed = st.session_state.speed_settings.get('내레이션', 1.0)
-                            if speed != 1.0:
-                                audio_bytes = audio_engine.apply_speed_control(audio_bytes, speed)
-                            st.session_state.cover_audio_bytes = audio_engine.normalize_audio(audio_bytes)
-                            st.rerun(scope="fragment")
-                        else:
-                            st.error("음원 생성에 실패했습니다.")
-                    except Exception as e:
-                        st.error(f"오류: {str(e)}")
+                if not title_text.strip():
+                    st.warning("도서 타이틀을 입력해 주세요.")
+                else:
+                    st.session_state.cover_title_text = title_text
+                    with st.spinner("Cover 음원 생성 중..."):
+                        try:
+                            audio_bytes = audio_engine.generate_audio(
+                                st.session_state.api_key, title_text.strip(), narr_voice_id
+                            )
+                            if isinstance(audio_bytes, bytes):
+                                speed = st.session_state.speed_settings.get('내레이션', 1.0)
+                                if speed != 1.0:
+                                    audio_bytes = audio_engine.apply_speed_control(audio_bytes, speed)
+                                st.session_state.cover_audio_bytes = audio_engine.normalize_audio(audio_bytes)
+                                st.rerun(scope="fragment")
+                            else:
+                                st.error("음원 생성에 실패했습니다.")
+                        except Exception as e:
+                            st.error(f"오류: {str(e)}")
 
         cover_audio = st.session_state.cover_audio_bytes
         if cover_audio:
