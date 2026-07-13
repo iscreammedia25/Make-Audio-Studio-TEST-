@@ -215,7 +215,7 @@ def _render_segment(rid: int, seg_id: int):
 
 
 
-def _generate_row(rid: int, display_num: int = 0) -> str | None:
+def _generate_row(rid: int, display_num: int = 0):
     seg_ids = st.session_state.get(f"narr_segs_{rid}", [])
     label   = f"Row {display_num}" if display_num else f"Row {rid}"
     audio_parts = []

@@ -26,10 +26,18 @@ def voice_selector_ui(key_label, current_voice_id, voices_dict, container_key,
     with st.popover(f"🎙️ {current_voice_name}", use_container_width=True):
         st.write(f"**{key_label} 보이스 설정**")
 
-        tab_list, tab_design, tab_clone = st.tabs(["📚 기존 목록", "✨ AI 신규 생성", "🎙️ 파일 클로닝"])
+        # st.tabs는 popover 안에서 클릭 시 popover가 닫히는 Streamlit 버그가 있어
+        # st.radio(horizontal=True)로 탭 역할을 대체합니다.
+        active_tab = st.radio(
+            "탭",
+            ["📚 기존 목록", "✨ AI 신규 생성", "🎙️ 파일 클로닝"],
+            key=f"tab_sel_{container_key}",
+            horizontal=True,
+            label_visibility="collapsed",
+        )
 
         # --- Tab 1: 기존 목록 ---
-        with tab_list:
+        if active_tab == "📚 기존 목록":
             if st.button("🔄 보이스 목록 새로고침", key=f"refresh_{container_key}", use_container_width=True):
                 with st.spinner("최신 목록을 가져오는 중..."):
                     updated = audio_engine.get_voices(st.session_state.api_key)
@@ -87,7 +95,7 @@ def voice_selector_ui(key_label, current_voice_id, voices_dict, container_key,
                         return v_id
 
         # --- Tab 2: AI 신규 생성 ---
-        with tab_design:
+        elif active_tab == "✨ AI 신규 생성":
             if not st.session_state.api_key:
                 st.warning("ElevenLabs API Key를 먼저 설정하세요.")
             else:
@@ -210,7 +218,7 @@ def voice_selector_ui(key_label, current_voice_id, voices_dict, container_key,
                                 st.error(f"저장 실패: {save_res['error']}")
 
         # --- Tab 3: 파일 클로닝 ---
-        with tab_clone:
+        elif active_tab == "🎙️ 파일 클로닝":
             if not st.session_state.api_key:
                 st.warning("ElevenLabs API Key를 먼저 설정하세요.")
             else:
