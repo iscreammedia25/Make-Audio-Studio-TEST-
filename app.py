@@ -319,10 +319,25 @@ def mbook_cover_section(book_id: str):
                 )
             with col_re:
                 if st.button("🔄 다시 생성", use_container_width=True, key="btn_cover_reset"):
+                    title_to_regen = st.session_state.cover_title_text
                     st.session_state.cover_audio_bytes = None
-                    st.session_state.cover_title_text = ""
                     st.session_state.zip_cache.pop("mBook", None)
-                    st.rerun()
+                    with st.spinner("Cover 음원 재생성 중..."):
+                        try:
+                            audio_bytes = audio_engine.generate_audio(
+                                st.session_state.api_key, title_to_regen.strip(), narr_voice_id
+                            )
+                            if isinstance(audio_bytes, bytes):
+                                speed = st.session_state.speed_settings.get('내레이션', 1.0)
+                                if speed != 1.0:
+                                    audio_bytes = audio_engine.apply_speed_control(audio_bytes, speed)
+                                st.session_state.cover_audio_bytes = audio_engine.normalize_audio(audio_bytes)
+                                st.session_state.zip_cache.pop("mBook", None)
+                                st.rerun()
+                            else:
+                                st.error("음원 재생성에 실패했습니다.")
+                        except Exception as e:
+                            st.error(f"오류: {str(e)}")
         else:
             # 미생성: 입력 폼
             if narr_voice_id:

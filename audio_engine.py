@@ -156,6 +156,48 @@ def normalize_audio(audio_bytes, target_dBFS=-20.0):
         if os.path.exists(tmp_in_path): os.unlink(tmp_in_path)
         if os.path.exists(tmp_out_path): os.unlink(tmp_out_path)
 
+def overlay_audio(audio_bytes_list):
+    """여러 MP3를 동시에 재생(amix 오버레이)합니다."""
+    import subprocess, imageio_ffmpeg, tempfile, os
+
+    if len(audio_bytes_list) == 1:
+        return audio_bytes_list[0]
+
+    ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+    tmp_files = []
+    tmp_out = None
+    try:
+        for audio_bytes in audio_bytes_list:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as f:
+                f.write(audio_bytes)
+                tmp_files.append(f.name)
+
+        n = len(tmp_files)
+        inputs = []
+        for path in tmp_files:
+            inputs.extend(["-i", path])
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as f:
+            tmp_out = f.name
+
+        subprocess.run(
+            [ffmpeg_exe, "-y"] + inputs + [
+                "-filter_complex", f"amix=inputs={n}:duration=longest:normalize=0",
+                "-vn", "-b:a", "192k", tmp_out
+            ],
+            check=True, capture_output=True
+        )
+        with open(tmp_out, "rb") as f:
+            return f.read()
+    except Exception as e:
+        print(f"overlay_audio error: {e}")
+        return audio_bytes_list[0]
+    finally:
+        for f in tmp_files:
+            if os.path.exists(f): os.unlink(f)
+        if tmp_out and os.path.exists(tmp_out): os.unlink(tmp_out)
+
+
 def merge_audio(audio_data_list, silence_between_ms=80):
     """ffmpeg concat demuxer로 여러 MP3를 병합합니다."""
     import subprocess
