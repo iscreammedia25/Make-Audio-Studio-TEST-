@@ -282,10 +282,11 @@ if '_session_initialized' not in st.session_state:
             from google import genai as _genai
             _client = _genai.Client(api_key=st.session_state.gemini_api_key)
             _model_names = [m.name for m in _client.models.list()]
-            _preferred = ["models/gemini-1.5-flash", "models/gemini-1.5-pro",
-                          "models/gemini-2.0-flash-exp", "models/gemini-1.0-pro"]
+            _preferred = ["models/gemini-3.8-flash", "models/gemini-2.0-flash-exp",
+                          "models/gemini-1.5-flash", "models/gemini-1.5-pro",
+                          "models/gemini-1.0-pro"]
             _best = next((m for m in _preferred if m in _model_names), None)
-            st.session_state.gemini_model = _best or (_model_names[0] if _model_names else "models/gemini-1.5-flash")
+            st.session_state.gemini_model = _best or (_model_names[0] if _model_names else "models/gemini-3.8-flash")
         except Exception:
             st.session_state.gemini_model = "models/gemini-1.5-flash"
     st.session_state['_session_initialized'] = True
@@ -633,9 +634,10 @@ with st.sidebar:
                     
                     # 지능형 모델 선택: 해당 키가 지원하는 가장 좋은 모델 찾기
                     preferred_models = [
-                        "models/gemini-1.5-flash", 
-                        "models/gemini-1.5-pro",
+                        "models/gemini-3.8-flash",
                         "models/gemini-2.0-flash-exp",
+                        "models/gemini-1.5-flash",
+                        "models/gemini-1.5-pro",
                         "models/gemini-1.0-pro"
                     ]
                     
@@ -654,7 +656,7 @@ with st.sidebar:
                         st.success(f"✅ Gemini 인증 성공! 현재 키에 최적화된 모델({best_model})이 설정되었습니다.")
                     else:
                         # 폴백: 직접 지정
-                        st.session_state.gemini_model = "models/gemini-1.5-flash"
+                        st.session_state.gemini_model = "models/gemini-3.8-flash"
                         st.warning(f"⚠️ 사용 가능한 모델을 찾지 못해 기본 모델({st.session_state.gemini_model})을 설정합니다.")
                 except Exception as e:
                     st.error(f"❌ Gemini 연결 테스트 실패: {str(e)}")

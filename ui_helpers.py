@@ -118,7 +118,7 @@ def _voice_dialog_modal(key_label, current_voice_id, container_key, char_info, c
                 if st.button("✨ Gemini로 보이스 설명 자동 생성",
                              key=f"d_gemini_btn_{container_key}", use_container_width=True):
                     with st.spinner("Gemini가 스토리를 분석해 보이스 설명을 작성 중..."):
-                        best_model = st.session_state.get('gemini_model', 'models/gemini-1.5-flash')
+                        best_model = st.session_state.get('gemini_model', 'models/gemini-3.8-flash')
                         g_res = llm_helper.generate_voice_description(
                             st.session_state.gemini_api_key,
                             char_name or "캐릭터",

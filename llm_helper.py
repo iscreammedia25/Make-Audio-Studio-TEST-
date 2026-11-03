@@ -2,7 +2,7 @@ from google import genai
 import json
 import re
 
-def extract_script_metadata_via_gemini(api_key, script_text, model_name='models/gemini-1.5-flash'):
+def extract_script_metadata_via_gemini(api_key, script_text, model_name='models/gemini-3.8-flash'):
     """
     Gemini API를 사용하여 대본 전체를 분석하고, 캐릭터 목록과 각 대사별 감정(Mood)을 추출합니다.
     """
@@ -69,7 +69,7 @@ def extract_script_metadata_via_gemini(api_key, script_text, model_name='models/
         return {"success": False, "error": f"Gemini 분석 중 오류: {str(e)}"}
 
 
-def annotate_segments_via_gemini(api_key, script_text, known_characters, model_name='models/gemini-1.5-flash'):
+def annotate_segments_via_gemini(api_key, script_text, known_characters, model_name='models/gemini-3.8-flash'):
     """
     이미 알고 있는 캐릭터 목록을 바탕으로 세그먼트 화자/감정만 분석합니다. (병렬 처리용)
     """
@@ -119,7 +119,7 @@ def annotate_segments_via_gemini(api_key, script_text, known_characters, model_n
         return {"success": False, "error": f"Gemini 세그먼트 분석 중 오류: {str(e)}"}
 
 
-def generate_voice_description(api_key, char_name, char_info, char_lines=None, model_name='models/gemini-1.5-flash'):
+def generate_voice_description(api_key, char_name, char_info, char_lines=None, model_name='models/gemini-3.8-flash'):
     """
     캐릭터 정보와 실제 대사를 바탕으로 ElevenLabs Voice Design에 적합한 영문 설명문을 생성합니다.
     """
